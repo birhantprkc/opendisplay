@@ -24,6 +24,45 @@ enum CaptureMode: String {
     case extend   // virtual display (Milestone 2)
 }
 
+/// Capture-resolution / bitrate trade-off. The virtual display always runs at
+/// native size — only the captured/encoded stream is scaled, so lower presets
+/// cut encode, transmit, and decode time at the cost of sharpness.
+enum StreamQuality: String, CaseIterable {
+    case best, balanced, fast
+
+    var scale: Double {
+        switch self {
+        case .best: return 1.0
+        case .balanced: return 0.75
+        case .fast: return 0.5
+        }
+    }
+
+    var bitrate: Int {
+        switch self {
+        case .best: return 18_000_000
+        case .balanced: return 10_000_000
+        case .fast: return 6_000_000
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .best: return "Best (native)"
+        case .balanced: return "Balanced (75%)"
+        case .fast: return "Fast (50%)"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .best: return "Pixel-perfect at the device's native resolution. Highest bandwidth and latency."
+        case .balanced: return "75% capture resolution — noticeably lower latency, slight softness."
+        case .fast: return "Half resolution — lowest latency and bandwidth, visibly softer. Good for WiFi."
+        }
+    }
+}
+
 struct PhoneInfo: Decodable {
     let pixelsWide: Int   // landscape-oriented (long edge)
     let pixelsHigh: Int
@@ -47,11 +86,14 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private let endpoint: NWEndpoint
     private let endpointName: String
     private let mode: CaptureMode
+    private let quality: StreamQuality
 
     // Backpressure: outstanding sends. If the socket can't keep up we drop
     // frames instead of queueing latency, then force a keyframe to resync.
+    // Kept tight: at 60fps each queued send is ~17ms of added latency.
     private var pendingSends = 0
-    private let maxPendingSends = 6
+    private let maxPendingSends = 3
+    private var dropsThisWindow = 0
     private var needsKeyframe = true
     private var connectionReady = false
     private var stopped = false
@@ -81,10 +123,12 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var lastPixelBuffer: CVPixelBuffer?
     private var lastCaptureAt = Date.distantPast
 
-    init(endpoint: NWEndpoint, name: String, mode: CaptureMode) {
+    init(endpoint: NWEndpoint, name: String, mode: CaptureMode,
+         quality: StreamQuality = .best) {
         self.endpoint = endpoint
         self.endpointName = name
         self.mode = mode
+        self.quality = quality
         super.init()
     }
 
@@ -117,8 +161,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                               userInfo: [NSLocalizedDescriptionKey: "no displays found"])
             }
             // SCDisplay reports points; capture at point resolution for M1.
-            try await startCapture(display: display,
-                                   pixelsWide: display.width, pixelsHigh: display.height)
+            let captureW = (Int(Double(display.width) * quality.scale)) & ~1
+            let captureH = (Int(Double(display.height) * quality.scale)) & ~1
+            try await startCapture(display: display, pixelsWide: captureW, pixelsHigh: captureH)
 
         case .extend:
             await status("Waiting for phone hello…")
@@ -169,8 +214,19 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         inputInjector = InputInjector(displayID: vd.displayID)
 
         let display = try await findSCDisplay(id: vd.displayID)
-        try await startCapture(display: display,
-                               pixelsWide: pointsWide * 2, pixelsHigh: pointsHigh * 2)
+        // Quality scaling: capture/encode below native when requested — the
+        // display itself stays native so window layout is unaffected.
+        let captureW = (Int(Double(pointsWide * 2) * quality.scale)) & ~1
+        let captureH = (Int(Double(pointsHigh * 2) * quality.scale)) & ~1
+        try await startCapture(display: display, pixelsWide: captureW, pixelsHigh: captureH)
+
+        // Debug aid (`defaults write sh.peet.opensidecar.mac testPattern -bool true`):
+        // an animated window on the virtual display generates a constant frame
+        // stream so steady-state latency can be measured without user activity.
+        if UserDefaults.standard.bool(forKey: "testPattern") {
+            let id = vd.displayID
+            Task { @MainActor in TestPattern.show(on: id) }
+        }
     }
 
     /// Tear down and rebuild when the phone announces new dimensions. Loops
@@ -226,7 +282,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         config.width = pixelsWide
         config.height = pixelsHigh
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        config.pixelFormat = kCVPixelFormatType_32BGRA
+        // 420v matches the encoder's native input — skips a BGRA→YUV conversion
+        // inside VideoToolbox. (`-pixfmt bgra` reverts for A/B testing.)
+        config.pixelFormat = UserDefaults.standard.string(forKey: "pixfmt") == "bgra"
+            ? kCVPixelFormatType_32BGRA
+            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.queueDepth = 5
         config.showsCursor = true
 
@@ -379,7 +439,20 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         switch type {
         case "ping":
-            break   // liveness only — lastReceived already updated
+            // Echo with our clock so the phone can estimate the offset
+            // (NTP-style) and compute true end-to-end frame latency.
+            if let t = obj["t"] as? Double {
+                let mt = Date().timeIntervalSince1970 * 1000
+                sendJSONFrame("{\"type\":\"pong\",\"t\":\(t),\"mt\":\(mt)}")
+            }
+        case "stats":
+            // Aggregated pipeline health measured on the phone — logged here
+            // so one file holds both ends of the story.
+            if let json = try? JSONSerialization.data(withJSONObject: obj),
+               let line = String(data: json, encoding: .utf8) {
+                Log.info("PHONE-STATS \(line) | mac drops=\(dropsThisWindow) pending=\(pendingSends)")
+                dropsThisWindow = 0
+            }
         case "hello":
             if let info = try? JSONDecoder().decode(PhoneInfo.self, from: payload) {
                 let previous = lastHello
@@ -432,11 +505,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // MARK: - Encoder setup
 
     private func setupEncoder(width: Int, height: Int) {
+        // Low-latency rate control: the hardware encoder emits every frame
+        // immediately instead of pipelining. (`-lowlatency NO` for A/B.)
+        let lowLatency = UserDefaults.standard.object(forKey: "lowlatency") == nil
+            || UserDefaults.standard.bool(forKey: "lowlatency")
+        let spec: CFDictionary? = lowLatency
+            ? [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: kCFBooleanTrue] as CFDictionary
+            : nil
         VTCompressionSessionCreate(
             allocator: nil,
             width: Int32(width), height: Int32(height),
             codecType: kCMVideoCodecType_H264,
-            encoderSpecification: nil,
+            encoderSpecification: spec,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
             outputCallback: nil,
@@ -453,11 +533,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber)
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: 2 as CFNumber)
-        VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_AverageBitRate, value: 15_000_000 as CFNumber)
+        VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_AverageBitRate, value: quality.bitrate as CFNumber)
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
         VTCompressionSessionPrepareToEncodeFrames(encoder)
-        Log.info("encoder ready: \(width)x\(height) H.264 15Mbps")
+        Log.info("encoder ready: \(width)x\(height) H.264 \(quality.bitrate / 1_000_000)Mbps quality=\(quality.rawValue) lowLatencyRC=\(lowLatency)")
     }
 
     // MARK: - Capture callback
@@ -477,6 +557,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         guard connectionReady else { return }
         if pendingSends > maxPendingSends {
             needsKeyframe = true   // dropped frames break the P-frame chain
+            dropsThisWindow += 1
             return
         }
 
@@ -485,6 +566,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func encode(_ pixelBuffer: CVPixelBuffer, pts: CMTime) {
         guard let encoder else { return }
+        let capturedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
         var frameProperties: CFDictionary?
         if needsKeyframe {
             frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue!] as CFDictionary
@@ -499,7 +581,15 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             infoFlagsOut: nil
         ) { [weak self] status, _, buffer in
             guard status == noErr, let buffer, let self else { return }
-            if let data = self.annexB(from: buffer) { self.sendFramed(data) }
+            if let data = self.annexB(from: buffer) {
+                // Telemetry prefix before the first start code — the receiver
+                // parses it and skips to the H.264 payload. cap = capture time,
+                // snd = handoff to the socket (so cap→snd ≈ encode duration).
+                let sndMs = Int64(Date().timeIntervalSince1970 * 1000)
+                var framed = Data("{\"cap\":\(capturedAtMs),\"snd\":\(sndMs)}".utf8)
+                framed.append(data)
+                self.sendFramed(framed)
+            }
         }
     }
 
@@ -553,6 +643,17 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     // MARK: - Wire framing: [4-byte big-endian length][payload]
+
+    /// Control messages on the video channel (pong etc.) — framed JSON without
+    /// start codes; the receiver routes payloads starting with '{'.
+    private func sendJSONFrame(_ json: String) {
+        guard let connection, connectionReady else { return }
+        let payload = Data(json.utf8)
+        var header = UInt32(payload.count).bigEndian
+        var frame = Data(bytes: &header, count: 4)
+        frame.append(payload)
+        connection.send(content: frame, completion: .contentProcessed { _ in })
+    }
 
     private func sendFramed(_ payload: Data) {
         guard let connection, connectionReady else { return }

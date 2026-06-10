@@ -6,10 +6,14 @@ struct OpenSidecarMacApp: App {
     @StateObject private var controller = SenderController()
 
     var body: some Scene {
-        WindowGroup("OpenSidecar") {
+        // Background utility: lives in the menu bar, no Dock icon (LSUIElement).
+        MenuBarExtra {
             ContentView(controller: controller)
+        } label: {
+            Image(systemName: controller.running
+                  ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
         }
-        .windowResizability(.contentSize)
+        .menuBarExtraStyle(.window)
     }
 }
 
@@ -41,6 +45,9 @@ final class SenderController: ObservableObject {
     @Published var port = UserDefaults.standard.string(forKey: "port") ?? "9000"
     // `-mode mirror` / `-mode extend` launch argument also works.
     @Published var mode = CaptureMode(rawValue: UserDefaults.standard.string(forKey: "mode") ?? "") ?? .extend
+    @Published var quality = StreamQuality(rawValue: UserDefaults.standard.string(forKey: "quality") ?? "") ?? .best {
+        didSet { UserDefaults.standard.set(quality.rawValue, forKey: "quality") }
+    }
 
     private var sender: MacSender?
     private var browser: NWBrowser?
@@ -107,7 +114,7 @@ final class SenderController: ObservableObject {
 
         running = true
         status = "Starting…"
-        let sender = MacSender(endpoint: endpoint, name: target.label, mode: mode)
+        let sender = MacSender(endpoint: endpoint, name: target.label, mode: mode, quality: quality)
         sender.onStatus = { [weak self] text in
             self?.status = text
             Log.info("status: \(text)")
@@ -246,6 +253,18 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: controller.mode) { controller.restartIfRunning() }
 
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Quality", selection: $controller.quality) {
+                        ForEach(StreamQuality.allCases, id: \.self) { q in
+                            Text(q.label).tag(q)
+                        }
+                    }
+                    .onChange(of: controller.quality) { controller.restartIfRunning() }
+                    Text(controller.quality.explanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 LabeledContent("Display layout") {
                     Button("Arrange Displays…") {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension") {
@@ -301,6 +320,8 @@ struct ContentView: View {
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
+                Button("Quit") { NSApp.terminate(nil) }
+                    .controlSize(.small)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

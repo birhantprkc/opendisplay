@@ -19,6 +19,7 @@ targets:
       path: Mac/Info.plist
       properties:
         NSPrincipalClass: NSApplication
+        LSUIElement: true
         NSLocalNetworkUsageDescription: OpenSidecar connects to your phone over the local network in WiFi mode.
         NSBonjourServices: ["_opensidecar._tcp"]
         LSApplicationCategoryType: public.app-category.utilities

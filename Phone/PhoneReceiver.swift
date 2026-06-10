@@ -21,6 +21,12 @@ struct PerfStats: Equatable {
     var stalls = 0               // frames that arrived >50ms late (this window)
     var decodeFlushes = 0        // display layer failures since connect
     var samples: [Double] = []   // last ~120 inter-frame intervals, ms
+    // True end-to-end latency (Mac capture → phone display handoff), using
+    // the clock offset estimated from timestamped ping/pong.
+    var e2eP50 = 0.0
+    var e2eP95 = 0.0
+    var encodeP50 = 0.0          // Mac-side capture→socket (encode + queue)
+    var rttMs = 0.0              // control-channel round trip
 }
 
 final class PhoneReceiver: ObservableObject {
@@ -55,6 +61,17 @@ final class PhoneReceiver: ObservableObject {
     private var lastFrameAt: Date?
     private var frameIntervals: [Double] = []   // ring buffer, ms
     private let maxSamples = 120
+
+    // Clock sync (NTP-style): offset = macClock − phoneClock, taken from the
+    // ping/pong sample with the lowest RTT (least asymmetric).
+    private var offsetSamples: [(rtt: Double, offset: Double)] = []
+    private var clockOffsetMs: Double?
+    private var lastRttMs = 0.0
+    private var e2eWindow: [Double] = []        // capture→display, ms
+    private var encodeWindow: [Double] = []     // capture→socket on the Mac, ms
+    private var statsReportCounter = 0
+
+    private var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
 
     let displayLayer: AVSampleBufferDisplayLayer
 
@@ -179,9 +196,31 @@ final class PhoneReceiver: ObservableObject {
         queue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self else { return }
             if self.connection?.state == .ready {
-                self.sendControl(["type": "ping"])
+                self.sendControl(["type": "ping", "t": self.nowMs])
             }
             self.schedulePing()
+        }
+    }
+
+    /// JSON on the video channel (pong, ping liveness) — payloads starting '{'.
+    private func handleVideoChannelJSON(_ data: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = obj["type"] as? String else { return }
+        switch type {
+        case "pong":
+            guard let t1 = obj["t"] as? Double, let mt = obj["mt"] as? Double else { return }
+            let t2 = nowMs
+            let rtt = t2 - t1
+            guard rtt >= 0, rtt < 2000 else { return }
+            let offset = mt - (t1 + t2) / 2
+            offsetSamples.append((rtt, offset))
+            if offsetSamples.count > 15 { offsetSamples.removeFirst() }
+            if let best = offsetSamples.min(by: { $0.rtt < $1.rtt }) {
+                clockOffsetMs = best.offset
+            }
+            lastRttMs = rtt
+        default:
+            break   // e.g. "ping" — liveness only
         }
     }
 
@@ -286,14 +325,27 @@ final class PhoneReceiver: ObservableObject {
     // MARK: - Annex B -> CMSampleBuffer
 
     private func handleAnnexB(_ data: Data) {
+        // Pure JSON payload = control message (pong etc.). Video frames also
+        // begin with '{' (telemetry prefix) but are large and contain start
+        // codes, so a small null-free payload is unambiguous.
+        if data.count < 512, data.first == UInt8(ascii: "{"), !data.contains(0x00) {
+            handleVideoChannelJSON(data)
+            return
+        }
+
         // Split on 4-byte start codes (our sender only emits 00 00 00 01).
+        // Bytes before the FIRST start code are the telemetry prefix
+        // ({"cap":…,"snd":…} stamped by the Mac).
         var nalus: [Data] = []
+        var metaPrefix: Data?
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             let bytes = raw.bindMemory(to: UInt8.self)
             var naluStart: Int? = nil
+            var firstSC: Int? = nil
             var i = 0
             while i + 4 <= bytes.count {
                 if bytes[i] == 0, bytes[i+1] == 0, bytes[i+2] == 0, bytes[i+3] == 1 {
+                    if firstSC == nil { firstSC = i }
                     if let s = naluStart, s < i { nalus.append(Data(bytes[s..<i])) }
                     naluStart = i + 4
                     i += 4
@@ -302,6 +354,15 @@ final class PhoneReceiver: ObservableObject {
                 }
             }
             if let s = naluStart, s < bytes.count { nalus.append(Data(bytes[s...])) }
+            if let f = firstSC, f > 0 { metaPrefix = Data(bytes[0..<f]) }
+        }
+
+        var captureMs: Double?
+        var sendMs: Double?
+        if let metaPrefix,
+           let meta = try? JSONSerialization.jsonObject(with: metaPrefix) as? [String: Any] {
+            captureMs = meta["cap"] as? Double
+            sendMs = meta["snd"] as? Double
         }
 
         var vclNALUs: [Data] = []
@@ -328,7 +389,7 @@ final class PhoneReceiver: ObservableObject {
         }
         guard !vclNALUs.isEmpty else { return }
         // All slices of one wire frame go into ONE sample buffer.
-        enqueueFrame(vclNALUs)
+        enqueueFrame(vclNALUs, captureMs: captureMs, sendMs: sendMs)
     }
 
     private func buildFormatDescription(sps: Data, pps: Data) {
@@ -361,7 +422,7 @@ final class PhoneReceiver: ObservableObject {
         }
     }
 
-    private func enqueueFrame(_ nalus: [Data]) {
+    private func enqueueFrame(_ nalus: [Data], captureMs: Double? = nil, sendMs: Double? = nil) {
         guard let formatDesc else { return }
 
         // Build one AVCC buffer: each NALU prefixed with 4-byte big-endian length.
@@ -429,6 +490,16 @@ final class PhoneReceiver: ObservableObject {
         }
         lastFrameAt = now
 
+        // True end-to-end latency: Mac capture timestamp vs our clock mapped
+        // onto the Mac's via the ping/pong offset.
+        if let captureMs, let sendMs {
+            encodeWindow.append(sendMs - captureMs)
+            if let offset = clockOffsetMs {
+                let e2e = (nowMs + offset) - captureMs
+                if e2e > -50, e2e < 5000 { e2eWindow.append(e2e) }
+            }
+        }
+
         framesThisWindow += 1
         let elapsed = now.timeIntervalSince(fpsWindowStart)
         if elapsed >= 1.0 {
@@ -443,15 +514,47 @@ final class PhoneReceiver: ObservableObject {
             }
             stats.stalls = stallsThisWindow
             stats.decodeFlushes = decodeFlushes
+            stats.e2eP50 = percentile(e2eWindow, 0.5)
+            stats.e2eP95 = percentile(e2eWindow, 0.95)
+            stats.encodeP50 = percentile(encodeWindow, 0.5)
+            stats.rttMs = lastRttMs
             framesThisWindow = 0
             bytesThisWindow = 0
             stallsThisWindow = 0
             fpsWindowStart = now
+
+            // Every 5s, report the aggregate to the Mac so its log holds the
+            // full pipeline picture for offline analysis.
+            statsReportCounter += 1
+            if statsReportCounter >= 5 {
+                statsReportCounter = 0
+                sendControl([
+                    "type": "stats",
+                    "fps": fps,
+                    "mbps": (stats.mbps * 10).rounded() / 10,
+                    "e2e50": stats.e2eP50.rounded(),
+                    "e2e95": stats.e2eP95.rounded(),
+                    "enc50": stats.encodeP50.rounded(),
+                    "rtt": lastRttMs.rounded(),
+                    "stalls": stats.stalls,
+                    "offsetKnown": clockOffsetMs != nil,
+                ])
+                e2eWindow.removeAll(keepingCapacity: true)
+                encodeWindow.removeAll(keepingCapacity: true)
+            }
+
             DispatchQueue.main.async {
                 self.fps = fps
                 self.perf = stats
             }
         }
+    }
+
+    private func percentile(_ values: [Double], _ p: Double) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let idx = min(sorted.count - 1, Int(Double(sorted.count) * p))
+        return sorted[idx]
     }
 
     // MARK: - Helpers

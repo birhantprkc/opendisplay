@@ -155,10 +155,14 @@ struct PerfOverlay: View {
 
     var body: some View {
         HStack(spacing: 14) {
+            if stats.e2eP50 > 0 {
+                metric("latency", String(format: "%.0f ms", stats.e2eP50))
+                metric("p95", String(format: "%.0f ms", stats.e2eP95))
+                metric("encode", String(format: "%.0f ms", stats.encodeP50))
+            }
             metric("FPS", "\(stats.fps)")
             metric("Mbit/s", String(format: "%.1f", stats.mbps))
             metric("frame", String(format: "%.1f ms", stats.avgFrameMs))
-            metric("max", String(format: "%.0f ms", stats.maxFrameMs))
             metric("stalls", "\(stats.stalls)")
             if stats.decodeFlushes > 0 {
                 metric("flushes", "\(stats.decodeFlushes)")
