@@ -217,13 +217,34 @@ The capture/streaming pipeline itself uses only public APIs.
 
 ## Roadmap
 
-- [ ] HEVC encoding option
-- [ ] Adaptive bitrate for WiFi
-- [ ] Apple Pencil + pressure (iPad)
-- [ ] Multiple virtual displays
-- [ ] Menu bar app mode
-- [x] Prebuilt releases (ad-hoc Mac app + sideloadable iOS ipa)
-- [ ] Developer-ID-signed + notarized Mac releases (needs paid Apple account)
+Tracked as [roadmap issues](https://github.com/peetzweg/opensidecar/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap) — pick one up if you'd like to contribute!
+
+**Connectivity & distribution**
+- [#3](https://github.com/peetzweg/opensidecar/issues/3) Built-in USB connectivity — plug in and go, no helper tools
+- [#16](https://github.com/peetzweg/opensidecar/issues/16) Encrypted WiFi transport with pairing code
+- [ ] App Store release of the iOS app + notarized Mac downloads
+
+**Input**
+- [#4](https://github.com/peetzweg/opensidecar/issues/4) Apple Pencil with pressure and tilt
+- [#5](https://github.com/peetzweg/opensidecar/issues/5) Right-click and multi-touch gestures
+- [#6](https://github.com/peetzweg/opensidecar/issues/6) Hardware keyboard passthrough
+- [#7](https://github.com/peetzweg/opensidecar/issues/7) On-screen modifier key sidebar
+
+**Display & media**
+- [#8](https://github.com/peetzweg/opensidecar/issues/8) Multiple devices / multiple virtual displays
+- [#9](https://github.com/peetzweg/opensidecar/issues/9) Resolution & quality settings
+- [#10](https://github.com/peetzweg/opensidecar/issues/10) HEVC encoding
+- [#12](https://github.com/peetzweg/opensidecar/issues/12) Audio forwarding
+
+**Experience**
+- [#11](https://github.com/peetzweg/opensidecar/issues/11) Menu bar app mode with auto-connect
+- [#13](https://github.com/peetzweg/opensidecar/issues/13) Battery & lifecycle awareness
+
+**Exploratory**
+- [#14](https://github.com/peetzweg/opensidecar/issues/14) Remote access beyond the local network
+- [#15](https://github.com/peetzweg/opensidecar/issues/15) Additional client platforms
+
+Done: prebuilt releases, WiFi via Bonjour, portrait mode, touch + two-finger scroll, performance overlay, iPad support.
 
 ## Contributing
 
