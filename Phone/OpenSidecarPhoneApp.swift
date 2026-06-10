@@ -154,26 +154,49 @@ struct PerfOverlay: View {
     let videoSize: CGSize
 
     var body: some View {
-        HStack(spacing: 14) {
-            if stats.e2eP50 > 0 {
-                metric("latency", String(format: "%.0f ms", stats.e2eP50))
-                metric("p95", String(format: "%.0f ms", stats.e2eP95))
-                metric("encode", String(format: "%.0f ms", stats.encodeP50))
+        VStack(spacing: 8) {
+            HStack(spacing: 14) {
+                // Transport badge — the question "is this cable or WiFi?"
+                Text(stats.transport)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(stats.transport == "USB" ? Color.green.opacity(0.35)
+                                : stats.transport == "WiFi" ? Color.blue.opacity(0.4)
+                                : Color.gray.opacity(0.3),
+                                in: Capsule())
+                    .foregroundStyle(.white)
+
+                if stats.e2eP50 > 0 {
+                    metric("latency", String(format: "%.0f ms", stats.e2eP50))
+                    metric("p95", String(format: "%.0f ms", stats.e2eP95))
+                    metric("encode", String(format: "%.0f ms", stats.encodeP50))
+                }
+                metric("rtt", String(format: "%.0f ms", stats.rttMs))
+                metric("FPS", "\(stats.fps)")
+                metric("Mbit/s", String(format: "%.1f", stats.mbps))
+                metric("stalls", "\(stats.stalls)")
+                metric("drops", "\(stats.macDrops)")
+                if stats.macPending > 0 {
+                    metric("queue", "\(stats.macPending)")
+                }
+                if stats.decodeFlushes > 0 {
+                    metric("flushes", "\(stats.decodeFlushes)")
+                }
+                metric("res", "\(Int(videoSize.width))×\(Int(videoSize.height))")
             }
-            metric("FPS", "\(stats.fps)")
-            metric("Mbit/s", String(format: "%.1f", stats.mbps))
-            metric("frame", String(format: "%.1f ms", stats.avgFrameMs))
-            metric("stalls", "\(stats.stalls)")
-            if stats.decodeFlushes > 0 {
-                metric("flushes", "\(stats.decodeFlushes)")
+            HStack(spacing: 14) {
+                graph("latency ms (cap→display)",
+                      BarGraph(samples: stats.e2eSamples, ceiling: 80,
+                               good: 25, warn: 40, reference: nil))
+                graph("frame interval ms",
+                      BarGraph(samples: stats.samples, ceiling: 60,
+                               good: 25, warn: 50, reference: 16.7))
             }
-            FrameTimeGraph(samples: stats.samples)
-                .frame(width: 130, height: 30)
-            metric("res", "\(Int(videoSize.width))×\(Int(videoSize.height))")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func metric(_ label: String, _ value: String) -> some View {
@@ -186,17 +209,29 @@ struct PerfOverlay: View {
                 .foregroundStyle(.white.opacity(0.5))
         }
     }
+
+    private func graph(_ label: String, _ content: BarGraph) -> some View {
+        VStack(spacing: 2) {
+            content.frame(width: 220, height: 38)
+            Text(label)
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.5))
+        }
+    }
 }
 
-/// Bar graph of the last ~120 inter-frame intervals. Green ≤ 25 ms,
-/// yellow ≤ 50 ms, red above — with a reference line at 16.7 ms (60 fps).
-struct FrameTimeGraph: View {
+/// Bar graph over a rolling sample window with green/yellow/red thresholds
+/// and an optional reference line (e.g. 16.7 ms = 60 fps).
+struct BarGraph: View {
     let samples: [Double]
+    let ceiling: Double
+    let good: Double
+    let warn: Double
+    let reference: Double?
 
     var body: some View {
         Canvas { context, size in
             guard !samples.isEmpty else { return }
-            let ceiling = 60.0   // ms mapped to full height
             let barWidth = size.width / CGFloat(max(samples.count, 1))
             for (i, ms) in samples.enumerated() {
                 let h = min(ms / ceiling, 1.0) * size.height
@@ -204,15 +239,16 @@ struct FrameTimeGraph: View {
                                   y: size.height - h,
                                   width: max(barWidth - 0.5, 0.5),
                                   height: h)
-                let color: Color = ms <= 25 ? .green : ms <= 50 ? .yellow : .red
+                let color: Color = ms <= good ? .green : ms <= warn ? .yellow : .red
                 context.fill(Path(rect), with: .color(color.opacity(0.85)))
             }
-            // 60 fps reference line
-            let y = size.height - (16.7 / ceiling) * size.height
-            context.stroke(Path { p in
-                p.move(to: CGPoint(x: 0, y: y))
-                p.addLine(to: CGPoint(x: size.width, y: y))
-            }, with: .color(.white.opacity(0.35)), lineWidth: 0.5)
+            if let reference {
+                let y = size.height - (reference / ceiling) * size.height
+                context.stroke(Path { p in
+                    p.move(to: CGPoint(x: 0, y: y))
+                    p.addLine(to: CGPoint(x: size.width, y: y))
+                }, with: .color(.white.opacity(0.35)), lineWidth: 0.5)
+            }
         }
     }
 }

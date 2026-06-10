@@ -27,6 +27,10 @@ struct PerfStats: Equatable {
     var e2eP95 = 0.0
     var encodeP50 = 0.0          // Mac-side capture→socket (encode + queue)
     var rttMs = 0.0              // control-channel round trip
+    var e2eSamples: [Double] = []  // last ~120 per-frame e2e latencies, ms
+    var transport = "—"          // USB (loopback via usbmux) or WiFi
+    var macDrops = 0             // frames the Mac dropped (backpressure), total
+    var macPending = 0           // Mac send queue depth right now
 }
 
 final class PhoneReceiver: ObservableObject {
@@ -69,7 +73,11 @@ final class PhoneReceiver: ObservableObject {
     private var lastRttMs = 0.0
     private var e2eWindow: [Double] = []        // capture→display, ms
     private var encodeWindow: [Double] = []     // capture→socket on the Mac, ms
+    private var e2eRing: [Double] = []          // per-frame, for the overlay graph
     private var statsReportCounter = 0
+    private var transport = "—"
+    private var macDrops = 0
+    private var macPending = 0
 
     private var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
 
@@ -153,6 +161,11 @@ final class PhoneReceiver: ObservableObject {
         listener?.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
             Log.info("new connection from \(String(describing: conn.endpoint))")
+            // usbmux-forwarded (cable) connections arrive from loopback;
+            // anything else came over the network.
+            let peer = String(describing: conn.endpoint)
+            self.transport = (peer.hasPrefix("127.0.0.1") || peer.hasPrefix("::1")
+                              || peer.hasPrefix("localhost")) ? "USB" : "WiFi"
             // Replace any existing connection and reset decoder state.
             self.connection?.cancel()
             self.connection = conn
@@ -219,8 +232,12 @@ final class PhoneReceiver: ObservableObject {
                 clockOffsetMs = best.offset
             }
             lastRttMs = rtt
+        case "ping":
+            // The Mac piggybacks its send-side health on liveness pings.
+            macDrops = obj["drops"] as? Int ?? macDrops
+            macPending = obj["pending"] as? Int ?? macPending
         default:
-            break   // e.g. "ping" — liveness only
+            break
         }
     }
 
@@ -496,7 +513,11 @@ final class PhoneReceiver: ObservableObject {
             encodeWindow.append(sendMs - captureMs)
             if let offset = clockOffsetMs {
                 let e2e = (nowMs + offset) - captureMs
-                if e2e > -50, e2e < 5000 { e2eWindow.append(e2e) }
+                if e2e > -50, e2e < 5000 {
+                    e2eWindow.append(e2e)
+                    e2eRing.append(max(e2e, 0))
+                    if e2eRing.count > maxSamples { e2eRing.removeFirst() }
+                }
             }
         }
 
@@ -518,6 +539,10 @@ final class PhoneReceiver: ObservableObject {
             stats.e2eP95 = percentile(e2eWindow, 0.95)
             stats.encodeP50 = percentile(encodeWindow, 0.5)
             stats.rttMs = lastRttMs
+            stats.e2eSamples = e2eRing
+            stats.transport = transport
+            stats.macDrops = macDrops
+            stats.macPending = macPending
             framesThisWindow = 0
             bytesThisWindow = 0
             stallsThisWindow = 0
@@ -530,6 +555,7 @@ final class PhoneReceiver: ObservableObject {
                 statsReportCounter = 0
                 sendControl([
                     "type": "stats",
+                    "transport": transport,
                     "fps": fps,
                     "mbps": (stats.mbps * 10).rounded() / 10,
                     "e2e50": stats.e2eP50.rounded(),

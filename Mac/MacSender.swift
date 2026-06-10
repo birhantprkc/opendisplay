@@ -105,13 +105,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // Liveness: both sides ping every 2s; if nothing arrives for 5s the link
     // is half-open (e.g. iproxy accepted but the device is gone) — reconnect.
     private var lastReceived = Date()
-    private static let pingFrame: Data = {
-        let payload = try! JSONSerialization.data(withJSONObject: ["type": "ping"])
-        var header = UInt32(payload.count).bigEndian
-        var frame = Data(bytes: &header, count: 4)
-        frame.append(payload)
-        return frame
-    }()
+    private var dropsTotal = 0
 
     private var framesSent = 0
     private var bytesSent = 0
@@ -408,8 +402,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         queue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self, !self.stopped else { return }
             if self.connectionReady {
-                self.connection?.send(content: Self.pingFrame,
-                                      completion: .contentProcessed { _ in })
+                // Liveness + send-side health for the phone's overlay.
+                self.sendJSONFrame("{\"type\":\"ping\",\"drops\":\(self.dropsTotal),\"pending\":\(self.pendingSends)}")
             }
             self.schedulePing()
         }
@@ -578,6 +572,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         if pendingSends > maxPendingSends {
             needsKeyframe = true   // dropped frames break the P-frame chain
             dropsThisWindow += 1
+            dropsTotal += 1
             return
         }
 
