@@ -388,6 +388,15 @@ struct VideoLayerView: UIViewRepresentable {
         pan.minimumNumberOfTouches = 2
         pan.maximumNumberOfTouches = 2
         view.addGestureRecognizer(pan)
+
+        // Local cursor echo: position updates ride the ~2ms control path
+        // instead of the ~30ms video path, so the pointer feels native.
+        receiver.onCursor = { [weak view] x, y, visible in
+            view?.moveCursor(x: x, y: y, visible: visible)
+        }
+        receiver.onCursorImage = { [weak view] image, anchor, normSize in
+            view?.setCursorSprite(image, anchor: anchor, normSize: normSize)
+        }
         return view
     }
 
@@ -396,13 +405,70 @@ struct VideoLayerView: UIViewRepresentable {
     final class VideoView: UIView {
         weak var receiver: PhoneReceiver?
 
+        private let cursorLayer: CALayer = {
+            let layer = CALayer()
+            layer.isHidden = true
+            layer.zPosition = 10
+            // Position updates arrive at 120Hz — implicit animations would
+            // smear the cursor behind every move.
+            layer.actions = ["position": NSNull(), "contents": NSNull(),
+                             "bounds": NSNull(), "hidden": NSNull()]
+            return layer
+        }()
+        private var cursorNormSize = CGSize.zero
+        private var cursorNorm = CGPoint(x: 0.5, y: 0.5)
+        private var cursorVisible = false
+
         override func layoutSubviews() {
             super.layoutSubviews()
             // Keep the display layer sized to the view without implicit animation.
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer.sublayers?.first?.frame = bounds
+            if cursorLayer.superlayer == nil { layer.addSublayer(cursorLayer) }
+            updateCursorLayout()
             CATransaction.commit()
+        }
+
+        /// Aspect-fit rect of the video inside the view (inverse of normalized()).
+        private func videoRect() -> CGRect? {
+            guard let video = receiver?.videoSize, video != .zero,
+                  bounds.width > 0, bounds.height > 0 else { return nil }
+            let scale = min(bounds.width / video.width, bounds.height / video.height)
+            let size = CGSize(width: video.width * scale, height: video.height * scale)
+            return CGRect(x: (bounds.width - size.width) / 2,
+                          y: (bounds.height - size.height) / 2,
+                          width: size.width, height: size.height)
+        }
+
+        func moveCursor(x: Double, y: Double, visible: Bool) {
+            cursorNorm = CGPoint(x: x, y: y)
+            cursorVisible = visible
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            cursorLayer.isHidden = !visible || cursorLayer.contents == nil
+            updateCursorLayout()
+            CATransaction.commit()
+        }
+
+        func setCursorSprite(_ image: UIImage, anchor: CGPoint, normSize: CGSize) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            cursorLayer.contents = image.cgImage
+            cursorLayer.anchorPoint = anchor
+            cursorNormSize = normSize
+            cursorLayer.isHidden = !cursorVisible
+            updateCursorLayout()
+            CATransaction.commit()
+        }
+
+        private func updateCursorLayout() {
+            guard let rect = videoRect(), cursorNormSize != .zero else { return }
+            cursorLayer.bounds = CGRect(x: 0, y: 0,
+                                        width: cursorNormSize.width * rect.width,
+                                        height: cursorNormSize.height * rect.height)
+            cursorLayer.position = CGPoint(x: rect.minX + cursorNorm.x * rect.width,
+                                           y: rect.minY + cursorNorm.y * rect.height)
         }
 
         // The video is aspect-fit inside the view; map view coords into the

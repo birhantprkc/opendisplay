@@ -107,6 +107,19 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var lastReceived = Date()
     private var dropsTotal = 0
 
+    // Local cursor echo: a cursor baked into the video carries the full
+    // capture→encode→stream→display latency (~30ms perceived). Instead we
+    // hide it from capture and stream its position on the control channel —
+    // the phone draws it locally on the ~2ms path the touches use.
+    // Escape hatch: `defaults write sh.peet.opensidecar.mac localCursor -bool false`.
+    private let localCursor = UserDefaults.standard.object(forKey: "localCursor") == nil
+        || UserDefaults.standard.bool(forKey: "localCursor")
+    private var cursorTimer: DispatchSourceTimer?
+    private var lastCursorSent: (x: Double, y: Double, visible: Bool) = (-1, -1, false)
+    private var lastCursorPNGHash = 0
+    private var captureDisplayID: CGDirectDisplayID = 0
+    private var displayPointsSize = CGSize.zero
+
     // Input latency: touches arrive stamped in our clock (the phone applies
     // its sync offset); delta to now = network + deframe + dispatch.
     private var inputLatencies: [Double] = []
@@ -295,7 +308,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // One buffer is held permanently (keyframe replay) and one sits in
         // the encoder for ~13ms — headroom prevents SCK starvation drops.
         config.queueDepth = 8
-        config.showsCursor = true
+        config.showsCursor = !localCursor
 
         setupEncoder(width: pixelsWide, height: pixelsHigh)
 
@@ -303,12 +316,19 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         try await stream.startCapture()
         self.stream = stream
-        Log.info("capture started: \(pixelsWide)x\(pixelsHigh) display \(display.displayID) mode \(mode.rawValue)")
+        captureDisplayID = display.displayID
+        displayPointsSize = CGSize(width: display.width, height: display.height)
+        lastCursorPNGHash = 0      // rotation rebuilds: re-send the sprite
+        lastCursorSent = (-1, -1, false)
+        startCursorEcho()
+        Log.info("capture started: \(pixelsWide)x\(pixelsHigh) display \(display.displayID) mode \(mode.rawValue) localCursor=\(localCursor)")
         await status("\(mode == .extend ? "Extending" : "Mirroring") \(pixelsWide)×\(pixelsHigh)")
     }
 
     func stop() {
         stopped = true
+        cursorTimer?.cancel()
+        cursorTimer = nil
         stream?.stopCapture { _ in }
         stream = nil
         connection?.cancel()
@@ -447,6 +467,73 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             self.scheduleWatchdog()
         }
+    }
+
+    // MARK: - Local cursor echo (Mac -> phone)
+
+    private func startCursorEcho() {
+        guard localCursor else { return }
+        cursorTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(8))   // 120Hz
+        timer.setEventHandler { [weak self] in self?.pollCursorPosition() }
+        timer.resume()
+        cursorTimer = timer
+        scheduleCursorImagePoll()
+    }
+
+    private func pollCursorPosition() {
+        guard connectionReady, captureDisplayID != 0,
+              let loc = CGEvent(source: nil)?.location else { return }
+        let bounds = CGDisplayBounds(captureDisplayID)
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        if bounds.contains(loc) {
+            let x = (loc.x - bounds.minX) / bounds.width
+            let y = (loc.y - bounds.minY) / bounds.height
+            if !lastCursorSent.visible
+                || abs(x - lastCursorSent.x) > 0.0004 || abs(y - lastCursorSent.y) > 0.0004 {
+                lastCursorSent = (x, y, true)
+                sendJSONFrame(String(format: "{\"type\":\"cursor\",\"x\":%.4f,\"y\":%.4f,\"v\":1}", x, y))
+            }
+        } else if lastCursorSent.visible {
+            lastCursorSent.visible = false
+            sendJSONFrame("{\"type\":\"cursor\",\"v\":0}")
+        }
+    }
+
+    /// The sprite changes rarely (arrow ↔ I-beam ↔ resize…) — poll it slowly
+    /// on the main thread (NSCursor is AppKit) and send only on change.
+    private func scheduleCursorImagePoll() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, !self.stopped, self.localCursor else { return }
+            self.pollCursorImage()
+            self.scheduleCursorImagePoll()
+        }
+    }
+
+    private func pollCursorImage() {
+        guard connectionReady, displayPointsSize != .zero,
+              let cursor = NSCursor.currentSystem else { return }
+        let image = cursor.image
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]),
+              png.count < 24_000 else { return }
+        let hash = png.hashValue
+        guard hash != lastCursorPNGHash else { return }
+        lastCursorPNGHash = hash
+        let size = image.size            // Mac points
+        let hot = cursor.hotSpot
+        // Normalized against the display so the phone can size/anchor the
+        // sprite without knowing capture scale or HiDPI factor.
+        let msg = String(format:
+            "{\"type\":\"cursorImg\",\"nw\":%.5f,\"nh\":%.5f,\"ax\":%.3f,\"ay\":%.3f,\"png\":\"%@\"}",
+            size.width / displayPointsSize.width,
+            size.height / displayPointsSize.height,
+            size.width > 0 ? hot.x / size.width : 0,
+            size.height > 0 ? hot.y / size.height : 0,
+            png.base64EncodedString())
+        queue.async { self.sendJSONFrame(msg) }
     }
 
     // MARK: - Control messages (phone -> Mac)

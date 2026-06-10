@@ -10,6 +10,7 @@ import Foundation
 import Network
 import AVFoundation
 import CoreMedia
+import UIKit
 
 /// One-second window of pipeline health, plus per-frame timing samples for
 /// the performance overlay graph.
@@ -86,6 +87,12 @@ final class PhoneReceiver: ObservableObject {
     private var macCapFps = 0
 
     private var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
+
+    // Local cursor echo (both called on the main thread): position is
+    // normalized [0,1] in video space; the sprite arrives as a PNG with its
+    // hotspot anchor and size normalized against the Mac display.
+    var onCursor: ((_ x: Double, _ y: Double, _ visible: Bool) -> Void)?
+    var onCursorImage: ((_ image: UIImage, _ anchor: CGPoint, _ normSize: CGSize) -> Void)?
 
     let displayLayer: AVSampleBufferDisplayLayer
 
@@ -251,6 +258,19 @@ final class PhoneReceiver: ObservableObject {
             macInputP50 = obj["inp50"] as? Double ?? macInputP50
             macInputP95 = obj["inp95"] as? Double ?? macInputP95
             macCapFps = obj["capFps"] as? Int ?? macCapFps
+        case "cursor":
+            let visible = (obj["v"] as? Int ?? 0) == 1
+            let x = obj["x"] as? Double ?? 0
+            let y = obj["y"] as? Double ?? 0
+            DispatchQueue.main.async { self.onCursor?(x, y, visible) }
+        case "cursorImg":
+            guard let b64 = obj["png"] as? String,
+                  let png = Data(base64Encoded: b64),
+                  let image = UIImage(data: png),
+                  let nw = obj["nw"] as? Double, let nh = obj["nh"] as? Double else { return }
+            let anchor = CGPoint(x: obj["ax"] as? Double ?? 0, y: obj["ay"] as? Double ?? 0)
+            let normSize = CGSize(width: nw, height: nh)
+            DispatchQueue.main.async { self.onCursorImage?(image, anchor, normSize) }
         default:
             break
         }
@@ -361,10 +381,11 @@ final class PhoneReceiver: ObservableObject {
     // MARK: - Annex B -> CMSampleBuffer
 
     private func handleAnnexB(_ data: Data) {
-        // Pure JSON payload = control message (pong etc.). Video frames also
-        // begin with '{' (telemetry prefix) but are large and contain start
-        // codes, so a small null-free payload is unambiguous.
-        if data.count < 512, data.first == UInt8(ascii: "{"), !data.contains(0x00) {
+        // Pure JSON payload = control message (pong, cursor sprite etc.).
+        // Video frames also begin with '{' (telemetry prefix) but always
+        // contain start codes — the null bytes make them unambiguous even
+        // against multi-KB JSON (cursor sprites are base64, NUL-free).
+        if data.count < 32_768, data.first == UInt8(ascii: "{"), !data.contains(0x00) {
             handleVideoChannelJSON(data)
             return
         }
