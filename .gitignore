@@ -20,3 +20,4 @@ CLAUDE.md
 
 # Local developer config (signing team etc.)
 .env
+.claude/
