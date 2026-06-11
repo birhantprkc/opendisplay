@@ -206,6 +206,12 @@ final class SenderController: ObservableObject {
 
     private func autoConnect() {
         guard autoConnectEnabled else { return }
+        // The -host/-port escape hatch is an explicit choice — dial it like
+        // the wired devices (it joins them, not replaces them).
+        if UserDefaults.standard.object(forKey: "host") != nil,
+           !usbDisabled.contains("usb:first") {
+            connect(to: .usb(udid: nil))
+        }
         for device in usbDevices where !usbDisabled.contains("usb:\(device.udid)") {
             connect(to: .usb(udid: device.udid))
         }
