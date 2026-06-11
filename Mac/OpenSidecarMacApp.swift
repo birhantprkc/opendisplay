@@ -108,6 +108,9 @@ final class DeviceSession: ObservableObject, Identifiable {
     // Receiver's per-install identity (from hello) — the key for recognizing
     // the same physical device across USB and WiFi.
     var deviceID: String?
+    // "iPhone" / "iPad" from hello — naming fallback while (or in case)
+    // lockdown hasn't resolved the device's real name.
+    var deviceKind: String?
 
     var transportLabel: String {
         if case .usb = target { return "USB" }
@@ -402,6 +405,7 @@ final class SenderController: ObservableObject {
         sender.onHello = { [weak self, weak session] info in
             guard let self, let session else { return }
             session.deviceID = info.id
+            session.deviceKind = info.device
             if case .usb(let udid?) = session.target, let installID = info.id {
                 self.installIDByUDID[udid] = installID
             }
@@ -494,7 +498,10 @@ final class SenderController: ObservableObject {
             if let twin { coveredSessionIDs.insert(ConnectionTarget.wifi(twin).sessionID) }
             entries.append(DeviceEntry(
                 id: "device:\(device.udid)",
-                name: device.name ?? twin.flatMap(serviceName) ?? "iPhone / iPad",
+                name: device.name
+                    ?? twin.flatMap(serviceName)
+                    ?? session(for: usbTarget.sessionID)?.deviceKind
+                    ?? "iPhone / iPad",
                 usbTarget: usbTarget,
                 wifiTarget: twin.map { .wifi($0) }))
         }
@@ -606,7 +613,11 @@ struct ContentView: View {
                     }
                     ForEach(controller.deviceEntries) { entry in
                         if let session = controller.session(for: entry) {
-                            SessionRow(session: session, controller: controller)
+                            // Title from the entry, not the session: the
+                            // session name was snapshotted at connect time,
+                            // often before lockdown resolved the real name.
+                            SessionRow(title: entry.name, session: session,
+                                       controller: controller)
                         } else {
                             HStack(alignment: .firstTextBaseline) {
                                 Circle()
@@ -757,6 +768,7 @@ struct ContentView: View {
 
 /// One connected device: live status, throughput, reconnect + disconnect.
 struct SessionRow: View {
+    let title: String
     @ObservedObject var session: DeviceSession
     let controller: SenderController
 
@@ -777,7 +789,7 @@ struct SessionRow: View {
                 .fill(statusColor)
                 .frame(width: 9, height: 9)
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.name)
+                Text(title)
                 Text("\(session.transportLabel) · \(session.status)")
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -47,18 +47,29 @@ final class VirtualDisplay {
         }
         Log.info("virtual display created: id=\(display.displayID) \(pointsWide)x\(pointsHigh)pt @2x")
 
-        // macOS defaults the new display to its 1x mode; explicitly select the
-        // HiDPI (@2x) variant so UI renders at Retina sharpness. The mode list
-        // populates asynchronously after applySettings, so retry briefly.
+        // macOS defaults the new display to its 1x mode AND can restore a
+        // stale saved mode for this serial asynchronously, seconds after the
+        // display appears (observed: a display checked as @2x at creation
+        // sitting at 1x later, and a rotated rebuild pillarboxed by the
+        // previous orientation's mode). So mode selection is enforcement,
+        // not a one-shot: keep watching for the lifetime of the display and
+        // re-assert the HiDPI mode whenever something else changes it.
         Task { @MainActor [weak self] in
-            for _ in 0..<10 {
-                if self?.selectHiDPIMode() == true { return }
-                try? await Task.sleep(for: .milliseconds(200))
+            var settled = false
+            while true {
+                // Scoped strong ref: a rotation rebuild relies on release
+                // removing the display — never hold it across the sleep.
+                do {
+                    guard let self else { return }
+                    if self.selectHiDPIMode() { settled = true }
+                }
+                try? await Task.sleep(for: .milliseconds(settled ? 2000 : 200))
             }
-            Log.info("HiDPI mode never appeared — staying at 1x")
         }
     }
 
+    /// Returns true when the display is (now) in its HiDPI mode. Silent when
+    /// nothing needed doing — this runs every 2s as enforcement.
     @discardableResult
     private func selectHiDPIMode() -> Bool {
         let opts = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
@@ -70,14 +81,13 @@ final class VirtualDisplay {
         }
         if let current = CGDisplayCopyDisplayMode(display.displayID),
            current.width == hidpi.width, current.pixelWidth == hidpi.pixelWidth {
-            Log.info("HiDPI mode already active")
             return true
         }
         var config: CGDisplayConfigRef?
         CGBeginDisplayConfiguration(&config)
         CGConfigureDisplayWithDisplayMode(config, display.displayID, hidpi, nil)
         let err = CGCompleteDisplayConfiguration(config, .permanently)
-        Log.info("HiDPI mode selected: \(hidpi.width)x\(hidpi.height)@2x (result \(err.rawValue))")
+        Log.info("HiDPI mode (re)selected: \(hidpi.width)x\(hidpi.height)@2x (result \(err.rawValue))")
         return err == .success
     }
 }

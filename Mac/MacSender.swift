@@ -253,10 +253,17 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         let displayName = endpointName.hasPrefix("iPhone / iPad")
             ? "OpenSidecar — \(info.kind)"
             : "OpenSidecar — \(endpointName)"
-        let vd = await MainActor.run { [displaySerial] in
+        // Orientation-specific serial: macOS persists the chosen mode per
+        // serial, and a portrait mode restored onto a landscape display
+        // pillarboxes the desktop INTO the framebuffer (streamed as-is).
+        // Distinct serials per orientation keep the two configs apart.
+        let serial = info.pixelsWide >= info.pixelsHigh
+            ? displaySerial
+            : displaySerial ^ 0x8000_0000
+        let vd = await MainActor.run {
             VirtualDisplay(name: displayName,
                            pointsWide: pointsWide, pointsHigh: pointsHigh,
-                           sizeInMillimeters: mm, serialNum: displaySerial)
+                           sizeInMillimeters: mm, serialNum: serial)
         }
         guard let vd else {
             throw NSError(domain: "MacSender", code: 2,

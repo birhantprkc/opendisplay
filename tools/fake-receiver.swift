@@ -15,6 +15,11 @@ func frame(_ json: String) -> Data {
     return d
 }
 
+// Pass "rotate" as arg 1 to announce a portrait re-hello 20s after connect
+// (and back to landscape at 45s) — simulates device rotation for testing
+// the Mac's rebuild path without physical hardware.
+let simulateRotation = CommandLine.arguments.dropFirst().first == "rotate"
+
 listener.newConnectionHandler = { conn in
     print("connection from \(conn.endpoint)")
     var frames = 0, bytes = 0
@@ -23,6 +28,18 @@ listener.newConnectionHandler = { conn in
     // iPad Pro 12.9" panel: 2732x2048 @2x
     conn.send(content: frame("{\"type\":\"hello\",\"pixelsWide\":2732,\"pixelsHigh\":2048,\"scale\":2,\"device\":\"iPad\",\"id\":\"FAKE-3\"}"),
               completion: .contentProcessed { _ in })
+    if simulateRotation {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
+            print("simulating rotation -> portrait")
+            conn.send(content: frame("{\"type\":\"hello\",\"pixelsWide\":2048,\"pixelsHigh\":2732,\"scale\":2,\"device\":\"iPad\",\"id\":\"FAKE-3\"}"),
+                      completion: .contentProcessed { _ in })
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 45) {
+            print("simulating rotation -> landscape")
+            conn.send(content: frame("{\"type\":\"hello\",\"pixelsWide\":2732,\"pixelsHigh\":2048,\"scale\":2,\"device\":\"iPad\",\"id\":\"FAKE-3\"}"),
+                      completion: .contentProcessed { _ in })
+        }
+    }
     let timer = DispatchSource.makeTimerSource(queue: .global())
     timer.schedule(deadline: .now() + 1, repeating: 2)
     timer.setEventHandler {
