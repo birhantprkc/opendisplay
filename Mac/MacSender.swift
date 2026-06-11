@@ -149,7 +149,6 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var lastCursorSent: (x: Double, y: Double, visible: Bool) = (-1, -1, false)
     private var lastCursorPNGHash = 0
     private var captureDisplayID: CGDirectDisplayID = 0
-    private var displayPointsSize = CGSize.zero
 
     // Input latency: touches arrive stamped in our clock (the phone applies
     // its sync offset); delta to now = network + deframe + dispatch.
@@ -361,7 +360,6 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         try await stream.startCapture()
         self.stream = stream
         captureDisplayID = display.displayID
-        displayPointsSize = CGSize(width: display.width, height: display.height)
         lastCursorPNGHash = 0      // rotation rebuilds: re-send the sprite
         lastCursorSent = (-1, -1, false)
         startCursorEcho()
@@ -648,11 +646,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func pollCursorImage() {
-        guard connectionReady, displayPointsSize != .zero,
+        // Display size read LIVE, not snapshotted at capture start: the
+        // HiDPI mode settles (and macOS re-flips it) asynchronously, and a
+        // sprite normalized against the 1x size renders at half size on the
+        // device. Mixing the size into the dedup hash re-sends the sprite
+        // whenever the mode flips, so the proportion always heals.
+        guard connectionReady, captureDisplayID != 0,
               let cursor = NSCursor.currentSystem else { return }
+        let displaySize = CGDisplayBounds(captureDisplayID).size   // points, current mode
+        guard displaySize.width > 0, displaySize.height > 0 else { return }
         let image = cursor.image
         guard let tiff = image.tiffRepresentation else { return }
-        let hash = tiff.hashValue
+        let hash = tiff.hashValue ^ Int(displaySize.width) &* 31
         guard hash != lastCursorPNGHash else { return }
         guard let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]),
@@ -664,8 +669,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // sprite without knowing capture scale or HiDPI factor.
         let msg = String(format:
             "{\"type\":\"cursorImg\",\"nw\":%.5f,\"nh\":%.5f,\"ax\":%.3f,\"ay\":%.3f,\"png\":\"%@\"}",
-            size.width / displayPointsSize.width,
-            size.height / displayPointsSize.height,
+            size.width / displaySize.width,
+            size.height / displaySize.height,
             size.width > 0 ? hot.x / size.width : 0,
             size.height > 0 ? hot.y / size.height : 0,
             png.base64EncodedString())
