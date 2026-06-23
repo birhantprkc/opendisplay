@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/peetzweg/opensidecar/compare/v0.7.0...v0.7.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* use absolute paths when packaging the macOS DMG ([04860c7](https://github.com/peetzweg/opensidecar/commit/04860c7cf3549cbfb5b2e881cd017a3493df8c6e))
+
 ## [0.7.0](https://github.com/peetzweg/opensidecar/compare/v0.6.16...v0.7.0) (2026-06-23)
 
 
