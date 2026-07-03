@@ -105,7 +105,11 @@ h2 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.1; letter-spacing: -0.0
 .downloads > div + div { border-left: 1px solid var(--line); }
 @media (max-width: 720px) {
   .downloads { grid-template-columns: 1fr; }
-  .downloads > div + div { border-left: 0; border-top: 1px solid var(--line); }
+  /* On mobile the phone install takes priority — surface Step 2 first. */
+  .downloads > div:nth-child(2) { order: -1; }
+  .downloads > div + div { border-left: 0; border-top: 0; }
+  /* Divider now sits above the (visually second) Mac card. */
+  .downloads > div:first-child { border-top: 1px solid var(--line); }
 }
 .dl-head { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--faint); margin-bottom: 6px;
@@ -123,8 +127,11 @@ h2 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.1; letter-spacing: -0.0
 .btn.ghost { background: transparent; color: var(--fg); }
 .btn.ghost:hover { background: var(--fg); color: var(--bg); }
 .note { font-size: 0.84rem; color: var(--muted); margin-top: 14px; line-height: 1.5; }
-.note a { color: var(--muted); text-decoration-color: var(--line); }
 .sub { display: block; font-size: 0.84rem; color: var(--muted); margin-top: 12px; }
+/* Secondary links under the download buttons share one subtle treatment
+   (they had drifted — the iOS ones were inheriting the darker default link). */
+.note a, .downloads .sub a { color: var(--muted); text-decoration-color: var(--line); }
+.note a:hover, .downloads .sub a:hover { color: var(--fg); text-decoration-color: var(--line-strong); }
 .btn-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
 
 /* Demo video: responsive 16:9 embed matching the bordered, squared aesthetic. */
@@ -208,6 +215,17 @@ details p { color: var(--muted); padding: 0 0 24px; max-width: 78ch; }
 .support { text-align: center; }
 .support h2 { max-width: 22ch; margin: 0 auto; }
 .support p { color: var(--muted); max-width: 62ch; margin: 20px auto 30px; }
+/* Personal-letter block: justified column, centered as a whole. */
+.support-note { max-width: 56ch; margin: 22px auto 30px; text-align: justify;
+  hyphens: auto; color: var(--muted); }
+.support-note p { max-width: none; margin: 0; }
+.support-note p + p { margin-top: 14px; }
+.support-note strong { color: var(--fg); }
+.support .kofi-logo { display: block; height: 46px; width: auto; margin: 4px auto 22px; }
+/* Ko-fi CTA: light button so the full-colour logomark stays legible. */
+.btn.kofi { background: #fff; color: var(--fg); }
+.btn.kofi:hover { background: #fafafa; }
+.btn.kofi .kofi-mark { height: 22px; width: auto; display: block; }
 
 /* ---- footer ---- */
 footer { border-top: 1px solid var(--line); padding: 48px 0 64px;

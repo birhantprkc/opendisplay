@@ -56,6 +56,39 @@ export default function App() {
       .catch(() => {})
   }, [])
 
+  // Scroll-spy: keep the URL fragment in sync with the section at the top of
+  // the viewport so any section is directly shareable. replaceState avoids
+  // both a scroll jump and flooding the back button with history entries.
+  useEffect(() => {
+    const sections = Array.from(document.querySelectorAll("section"))
+    if (!sections.length) return
+    let raf = 0
+    const sync = () => {
+      raf = 0
+      // Trigger line just below the 60px sticky nav.
+      const line = 72
+      let current = ""
+      for (const s of sections) {
+        if (s.getBoundingClientRect().top <= line) current = s.id
+      }
+      const hash = current ? `#${current}` : ""
+      if (hash !== window.location.hash) {
+        // Empty hash → drop the fragment entirely (keeps the base path/query).
+        const url = hash || window.location.pathname + window.location.search
+        window.history.replaceState(null, "", url)
+      }
+    }
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(sync)
+    }
+    sync()
+    window.addEventListener("scroll", onScroll, { passive: true })
+    return () => {
+      window.removeEventListener("scroll", onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [])
+
   return (
     <>
       <nav>
@@ -84,11 +117,11 @@ export default function App() {
           </a>
           <div className="links">
             <a href="#demo">Demo</a>
+            <a href="#support">Support</a>
             <a href="#features">Features</a>
-            <a href="#contribute">Contribute</a>
             <a href="#why">Compare</a>
             <a href="#faq">FAQ</a>
-            <a href="#support">Support</a>
+            <a href="#contribute">Contribute</a>
             <a
               className="gh"
               href="https://github.com/peetzweg/opendisplay"
@@ -113,7 +146,7 @@ export default function App() {
       <section>
         <div className="wrap hero">
           <img ref={heroLogoRef} className="hero-logo" src="logo.png" alt="OpenDisplay" width="160" height="160" />
-          <p className="eyebrow">Free &amp; open source · macOS + iOS</p>
+          <p className="eyebrow">Free &amp; open source</p>
           <h1>
             <span className="l1">
               Use your{" "}
@@ -139,7 +172,7 @@ export default function App() {
             A true extended display, not a mirror: USB or WiFi, Retina-sharp, with touch and
             scroll. No subscription. No dongle. No account.
           </p>
-          <p className="meta">macOS 14+ &nbsp;·&nbsp; iOS 17+ &nbsp;·&nbsp; GPL-3.0</p>
+          <p className="meta">macOS 14+ &nbsp;·&nbsp; iPadOS 17+ &nbsp;·&nbsp; iOS 17+ &nbsp;·&nbsp; GPL-3.0</p>
           <p className="hero-support">
             <a href="#support">Like it? Support the project →</a>
           </p>
@@ -164,12 +197,20 @@ export default function App() {
                 Signed &amp; notarized — opens normally on macOS&nbsp;14+. Prefer to compile it yourself?{" "}
                 <a href="https://github.com/peetzweg/opendisplay#quick-start">Build from source ↗</a>
               </p>
+              <p className="note">
+                Looking for an older version?{" "}
+                <a href="https://github.com/peetzweg/opendisplay/releases">Browse all releases ↗</a>
+              </p>
             </div>
             <div>
               <div className="dl-head">
                 <span className="step">Step 2</span> On your iPhone &amp; iPad
               </div>
               <p className="dl-sub">The receiver — displays the stream and sends touch back.</p>
+              {/* TODO: On desktop only, show a QR code next to the App Store
+                  badge that encodes the App Store link, so visitors on a
+                  desktop PC can scan it with their iPhone or iPad to install
+                  the receiver. Hide it on touch/mobile viewports. */}
               <div className="ios-row">
                 <a
                   className="badge-wrap"
@@ -219,12 +260,33 @@ export default function App() {
       <section id="support">
         <div className="wrap sec support">
           <p className="eyebrow">Support the project</p>
+          <img className="kofi-logo" src="kofi-logo.png" alt="Ko-fi" width="200" height="61" />
           <h2>If OpenDisplay saved you a monitor, consider buying me a coffee.</h2>
-          <p>
-            Free, open source, and funded out of my own pocket — including the Apple Developer
-            membership behind signed, one-click installs. If it helps you, a tip keeps it going.
-          </p>
-          <a className="btn primary" href="https://ko-fi.com/peetzweg">Support on Ko-fi</a>
+          <div className="support-note">
+            <p>
+              OpenDisplay is a one-person labour of love, built and maintained by me,
+              Philip. It's not a company. It's just me.
+            </p>
+            <p>
+              It's free, open source, and funded out of my own pocket. The fixed costs
+              are modest but real: <strong>$99 a year</strong> for the Apple Developer
+              membership behind the signed, one-click installs, and <strong>$11 a year</strong>{" "}
+              for the domain. On top of that go a lot of unpaid evenings and weekends.
+            </p>
+            <p>
+              Supporting me on Ko-fi keeps OpenDisplay well maintained and free for
+              everyone, including the people who can't afford to chip in. My goal is to
+              make this the greatest display companion app there is for iPad.
+            </p>
+            <p>
+              If it saved you from buying a monitor, a small tip helps keep it going.
+              Thank you.
+            </p>
+          </div>
+          <a className="btn kofi" href="https://ko-fi.com/peetzweg">
+            <img className="kofi-mark" src="kofi-mark.webp" alt="" width="28" height="28" />
+            Support on Ko-fi
+          </a>
         </div>
       </section>
 
@@ -235,37 +297,14 @@ export default function App() {
           <div className="fgrid">
             <div className="fcell"><span className="n">001</span><h3>No account, ever</h3><p>No sign-up, no email, no login. And unlike Apple Sidecar — which only works between devices on the <em>same</em> Apple ID — OpenDisplay pairs across different Apple IDs, so you can use a partner's or friend's iPad. Download both apps and go.</p></div>
             <div className="fcell"><span className="n">002</span><h3>Low-latency pipeline</h3><p>Up to 60 FPS over USB. Hardware H.264 (VideoToolbox real-time mode), TCP_NODELAY, and frame-dropping backpressure with instant keyframe recovery keep it responsive.</p></div>
-            <div className="fcell"><span className="n">003</span><h3>Retina sharp</h3><p>Native Retina resolution — the virtual display matches your device panel pixel-for-pixel at HiDPI (@2x), so text looks exactly like it should.</p></div>
-            <div className="fcell"><span className="n">004</span><h3>True extension</h3><p>macOS treats your phone as a real monitor via a virtual display — arrange it in System Settings, drag windows onto it. Mirroring is available too.</p></div>
+            <div className="fcell"><span className="n">003</span><h3>Two, even three screens</h3><p>You're not limited to one device. Run several iPads and iPhones at once, each as its own extended display — up to three has been tested, and you can freely mix iPads and iPhones. Arrange them all in System Settings like real monitors.</p></div>
+            <div className="fcell"><span className="n">004</span><h3>Retina sharp</h3><p>Native Retina resolution — the virtual display matches your device panel pixel-for-pixel at HiDPI (@2x), so text looks exactly like it should.</p></div>
             <div className="fcell"><span className="n">005</span><h3>USB-wired, lowest latency</h3><p>Streams over your charging cable via usbmux. No network, no jitter — and your phone charges while it works.</p></div>
             <div className="fcell"><span className="n">006</span><h3>WiFi, zero config</h3><p>The phone advertises itself with Bonjour; pick it from a dropdown. No IP addresses to type.</p></div>
             <div className="fcell"><span className="n">007</span><h3>Touch &amp; scroll</h3><p>Tap to click, drag to drag, two-finger pan to scroll. A tiny touchscreen for your Mac.</p></div>
             <div className="fcell"><span className="n">008</span><h3>Portrait mode</h3><p>Rotate the phone and the virtual display rebuilds as a vertical monitor — perfect for chat, logs, or docs.</p></div>
             <div className="fcell"><span className="n">009</span><h3>Private by design</h3><p>One direct TCP connection between your devices. No servers, no accounts, no telemetry. Read the code.</p></div>
           </div>
-        </div>
-      </section>
-
-      <section id="contribute">
-        <div className="wrap sec">
-          <p className="eyebrow">Contribute</p>
-          <h2>Open source, and built in the open.</h2>
-          <p style={{ color: "var(--muted)", maxWidth: "72ch", marginTop: "8px" }}>
-            OpenDisplay is GPL-3.0 and developed entirely on GitHub — the whole stack, from Mac
-            capture and H.264 encoding to the iOS receiver, is yours to read, build, and improve.
-            Bug reports, feature ideas, and pull requests are all welcome. Build-and-run instructions
-            live in the README.
-          </p>
-          <div className="btn-row">
-            <a className="btn primary" href="https://github.com/peetzweg/opendisplay">View on GitHub ↗</a>
-            <a className="btn ghost" href="https://github.com/peetzweg/opendisplay/issues">Open an issue ↗</a>
-          </div>
-          <p className="sub">
-            New here? Start with the{" "}
-            <a href="https://github.com/peetzweg/opendisplay#quick-start">README quick-start</a>{" "}
-            to build both apps, or browse the{" "}
-            <a href="https://github.com/peetzweg/opendisplay/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">good first issues</a>.
-          </p>
         </div>
       </section>
 
@@ -374,6 +413,29 @@ export default function App() {
               to v0.4.x were MIT-licensed and remain available under those terms.)</p>
             </details>
           </div>
+        </div>
+      </section>
+
+      <section id="contribute">
+        <div className="wrap sec">
+          <p className="eyebrow">Contribute</p>
+          <h2>Open source, and built in the open.</h2>
+          <p style={{ color: "var(--muted)", maxWidth: "72ch", marginTop: "8px" }}>
+            OpenDisplay is GPL-3.0 and developed entirely on GitHub — the whole stack, from Mac
+            capture and H.264 encoding to the iOS receiver, is yours to read, build, and improve.
+            Bug reports, feature ideas, and pull requests are all welcome. Build-and-run instructions
+            live in the README.
+          </p>
+          <div className="btn-row">
+            <a className="btn primary" href="https://github.com/peetzweg/opendisplay">View on GitHub ↗</a>
+            <a className="btn ghost" href="https://github.com/peetzweg/opendisplay/issues">Open an issue ↗</a>
+          </div>
+          <p className="sub">
+            New here? Start with the{" "}
+            <a href="https://github.com/peetzweg/opendisplay#quick-start">README quick-start</a>{" "}
+            to build both apps, or browse the{" "}
+            <a href="https://github.com/peetzweg/opendisplay/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">good first issues</a>.
+          </p>
         </div>
       </section>
 
