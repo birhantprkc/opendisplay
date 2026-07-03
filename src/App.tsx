@@ -113,7 +113,7 @@ export default function App() {
       <section>
         <div className="wrap hero">
           <img ref={heroLogoRef} className="hero-logo" src="logo.png" alt="OpenDisplay" width="160" height="160" />
-          <p className="eyebrow">Free &amp; open source · macOS + iOS</p>
+          <p className="eyebrow">Free &amp; open source</p>
           <h1>
             <span className="l1">
               Use your{" "}
@@ -139,7 +139,7 @@ export default function App() {
             A true extended display, not a mirror: USB or WiFi, Retina-sharp, with touch and
             scroll. No subscription. No dongle. No account.
           </p>
-          <p className="meta">macOS 14+ &nbsp;·&nbsp; iOS 17+ &nbsp;·&nbsp; GPL-3.0</p>
+          <p className="meta">macOS 14+ &nbsp;·&nbsp; iPadOS 17+ &nbsp;·&nbsp; iOS 17+ &nbsp;·&nbsp; GPL-3.0</p>
           <p className="hero-support">
             <a href="#support">Like it? Support the project →</a>
           </p>
@@ -164,12 +164,20 @@ export default function App() {
                 Signed &amp; notarized — opens normally on macOS&nbsp;14+. Prefer to compile it yourself?{" "}
                 <a href="https://github.com/peetzweg/opendisplay#quick-start">Build from source ↗</a>
               </p>
+              <p className="note">
+                Looking for an older version?{" "}
+                <a href="https://github.com/peetzweg/opendisplay/releases">Browse all releases ↗</a>
+              </p>
             </div>
             <div>
               <div className="dl-head">
                 <span className="step">Step 2</span> On your iPhone &amp; iPad
               </div>
               <p className="dl-sub">The receiver — displays the stream and sends touch back.</p>
+              {/* TODO: On desktop only, show a QR code next to the App Store
+                  badge that encodes the App Store link, so visitors on a
+                  desktop PC can scan it with their iPhone or iPad to install
+                  the receiver. Hide it on touch/mobile viewports. */}
               <div className="ios-row">
                 <a
                   className="badge-wrap"
