@@ -14,15 +14,18 @@ const ITEMS: ShowcaseItem[] = [
     id: "wyEUkMgH3zw",
     title: "OpenDisplay demo — use your iPad as a second monitor for your Mac",
   },
+  // The <img> inside each blockquote is a self-hosted copy of the tweet's
+  // photo (public/showcase/): ad blockers commonly block widgets.js, and the
+  // styled blockquote + local photo is what those visitors get instead.
   {
     kind: "tweet",
     url: "https://x.com/eduwass/status/2071902710597583300",
-    html: `<blockquote class="twitter-tweet" data-dnt="true" data-conversation="none"><p lang="en" dir="ltr"><a href="https://x.com/peetzweg?ref_src=twsrc%5Etfw">@peetzweg</a> here&#39;s the setup I&#39;ve been testing OpenSidecar on 😅 <br>- LG Ultrawide<br>- Macbook Pro M1 (built-in screen)<br>- iPad Pro 12.9 x3<br>working like a champ <a href="https://t.co/Fqy0fwHHrm">pic.twitter.com/Fqy0fwHHrm</a></p>&mdash; Edu Wass (@eduwass) <a href="https://x.com/eduwass/status/2071902710597583300?ref_src=twsrc%5Etfw">June 30, 2026</a></blockquote>`,
+    html: `<blockquote class="twitter-tweet" data-dnt="true" data-conversation="none"><p lang="en" dir="ltr"><a href="https://x.com/peetzweg?ref_src=twsrc%5Etfw">@peetzweg</a> here&#39;s the setup I&#39;ve been testing OpenSidecar on 😅 <br>- LG Ultrawide<br>- Macbook Pro M1 (built-in screen)<br>- iPad Pro 12.9 x3<br>working like a champ <a href="https://t.co/Fqy0fwHHrm">pic.twitter.com/Fqy0fwHHrm</a></p><img src="showcase/tweet-eduwass.jpg" alt="Desk with an LG ultrawide, a MacBook Pro and three iPad Pros all running as displays" loading="lazy" width="1200" height="675">&mdash; Edu Wass (@eduwass) <a href="https://x.com/eduwass/status/2071902710597583300?ref_src=twsrc%5Etfw">June 30, 2026</a></blockquote>`,
   },
   {
     kind: "tweet",
     url: "https://x.com/peetzweg/status/2074416821738815692",
-    html: `<blockquote class="twitter-tweet" data-dnt="true"><p lang="en" dir="ltr">How the magic is happening today. Obviously using OpenDisplay for my Mactendo DS™ setup. <a href="https://t.co/6FEzG9APF8">pic.twitter.com/6FEzG9APF8</a></p>&mdash; peetzweg/ (@peetzweg) <a href="https://x.com/peetzweg/status/2074416821738815692?ref_src=twsrc%5Etfw">July 7, 2026</a></blockquote>`,
+    html: `<blockquote class="twitter-tweet" data-dnt="true"><p lang="en" dir="ltr">How the magic is happening today. Obviously using OpenDisplay for my Mactendo DS™ setup. <a href="https://t.co/6FEzG9APF8">pic.twitter.com/6FEzG9APF8</a></p><img src="showcase/tweet-peetzweg.jpg" alt="MacBook with an iPhone perched above its screen as a second display — the Mactendo DS setup" loading="lazy" width="1200" height="900">&mdash; peetzweg/ (@peetzweg) <a href="https://x.com/peetzweg/status/2074416821738815692?ref_src=twsrc%5Etfw">July 7, 2026</a></blockquote>`,
   },
 ]
 
@@ -40,22 +43,32 @@ export default function Showcase() {
   const [canNext, setCanNext] = useState(true)
 
   // Upgrade the prerendered blockquotes into full tweet embeds (with media).
-  // The blockquotes stay as the crawlable / no-JS fallback.
+  // The blockquotes stay as the crawlable fallback — and the visible state
+  // for visitors whose ad blocker eats widgets.js. Polling instead of a
+  // script onload listener sidesteps every already-loading race (HMR,
+  // remounts, a second copy of the script).
   useEffect(() => {
-    const load = () => window.twttr?.widgets.load(trackRef.current)
-    if (window.twttr) {
-      load()
-      return
+    const tryLoad = () => {
+      if (!window.twttr?.widgets) return false
+      window.twttr.widgets.load(trackRef.current)
+      return true
     }
-    const existing = document.querySelector<HTMLScriptElement>(`script[src="${WIDGETS_SRC}"]`)
-    const script = existing ?? document.createElement("script")
-    script.addEventListener("load", load)
-    if (!existing) {
+    if (tryLoad()) return
+    if (!document.querySelector(`script[src="${WIDGETS_SRC}"]`)) {
+      const script = document.createElement("script")
       script.src = WIDGETS_SRC
       script.async = true
       document.head.appendChild(script)
     }
-    return () => script.removeEventListener("load", load)
+    const timer = window.setInterval(() => {
+      if (tryLoad()) window.clearInterval(timer)
+    }, 250)
+    // Blocked script → twttr never appears; stop polling after a while.
+    const giveUp = window.setTimeout(() => window.clearInterval(timer), 15000)
+    return () => {
+      window.clearInterval(timer)
+      window.clearTimeout(giveUp)
+    }
   }, [])
 
   // Keep the arrows honest: disable the one pointing at an edge we're on.
