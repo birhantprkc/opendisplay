@@ -145,6 +145,11 @@ export default function App() {
         </div>
       </nav>
 
+      {/* Sticky-scope: the Ko-fi bar sticks under the nav through the hero and
+          demo, then releases where this div ends — right before #support. */}
+      <div className="nudge-scope">
+        <SupportNudge />
+
       <section>
         <div className="wrap hero">
           <img ref={heroLogoRef} className="hero-logo" src="logo.png" alt="OpenDisplay" width="160" height="160" />
@@ -240,8 +245,6 @@ export default function App() {
         </div>
       </section>
 
-      <SupportNudge />
-
       <section id="demo">
         <div className="wrap sec">
           <p className="eyebrow">Demo</p>
@@ -254,8 +257,7 @@ export default function App() {
           </p>
         </div>
       </section>
-
-      <SupportNudge />
+      </div>
 
       <section id="support">
         <div className="wrap sec support">
