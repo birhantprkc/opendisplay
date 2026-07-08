@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.11.0](https://github.com/peetzweg/opendisplay/compare/v0.10.1...v0.11.0) (2026-07-07)
+
+
+### Features
+
+* **web:** full-bleed showcase strip with ad-blocker-proof tweet fallbacks ([26879c2](https://github.com/peetzweg/opendisplay/commit/26879c28f7c2912e8fc86b7c24ea3de7c58ac3d1))
+* **web:** replace live X embeds with self-hosted static post cards ([9415b37](https://github.com/peetzweg/opendisplay/commit/9415b37ba2639ced50707b52efae921f5b2d84d2))
+* **web:** showcase community tweets alongside the demo video ([9d95a94](https://github.com/peetzweg/opendisplay/commit/9d95a94cb56dcb4b99b630204610576cc4e8ec47))
+* **web:** showcase community tweets alongside the demo video ([b32a4d1](https://github.com/peetzweg/opendisplay/commit/b32a4d1f2327e7d06166f4892acd6d70a70137dd))
+
+
+### Bug Fixes
+
+* **mac:** force extend-mode virtual display out of system mirror sets ([84f7dee](https://github.com/peetzweg/opendisplay/commit/84f7dee8e22f80c7b7a5d1e3bc23cb933fa56817))
+* **mac:** force extend-mode virtual display out of system mirror sets ([#100](https://github.com/peetzweg/opendisplay/issues/100)) ([e3fca0e](https://github.com/peetzweg/opendisplay/commit/e3fca0e0869faafe9af9e3bd617ed9e8c936b64a))
+
+## [0.10.1](https://github.com/peetzweg/opendisplay/compare/v0.10.0...v0.10.1) (2026-07-03)
+
+
+### Bug Fixes
+
+* **ci:** appcast never publishes on first release (untracked file) ([090144c](https://github.com/peetzweg/opendisplay/commit/090144cd195acf2397d804ddf5e5538ed7ece1ac))
+* **ci:** publish appcast on first release (detect untracked file) ([db16008](https://github.com/peetzweg/opendisplay/commit/db16008ef3c9176b33ba3b8c319cc843547155c1))
+
+## [0.10.0](https://github.com/peetzweg/opendisplay/compare/v0.9.0...v0.10.0) (2026-07-03)
+
+
+### Features
+
+* **mac:** scaffold Sparkle auto-update with Pages-hosted appcast ([42415f8](https://github.com/peetzweg/opendisplay/commit/42415f802485136b7bf4261705aae47863430787))
+* **mac:** Sparkle auto-update with Pages-hosted appcast (rebase of [#70](https://github.com/peetzweg/opendisplay/issues/70)) ([1d52c29](https://github.com/peetzweg/opendisplay/commit/1d52c298cb3ed125e340fd6d9f115521a2404370))
+* **web:** activate App Store download link for iOS receiver ([9ae421e](https://github.com/peetzweg/opendisplay/commit/9ae421ee079b558bb1ad095dab35a007eabb1b5b))
+* **web:** add demo video section ([6a5a358](https://github.com/peetzweg/opendisplay/commit/6a5a358730e7844f528dcb9fcabf2b14a36c6e01))
+* **web:** add hero app-icon logo with animated navbar handoff ([c4b2997](https://github.com/peetzweg/opendisplay/commit/c4b29971778905c1e29606a7d51f63c3d281f3e7))
+* **web:** add multi-screen feature, tweak Ko-fi iPad wording ([279a39d](https://github.com/peetzweg/opendisplay/commit/279a39dd12dc58b6dbff9f78c9c8ac234fd40e37))
+* **web:** add Plausible analytics and iOS Smart App Banner ([5504d91](https://github.com/peetzweg/opendisplay/commit/5504d91d46fbd6f4d41e964df5733eea9855eab5))
+* **web:** add social share image and FAQPage structured data ([3fe0915](https://github.com/peetzweg/opendisplay/commit/3fe0915d25381a3f3276d61d88e4df5e463dc97c))
+* **web:** align download secondary links, add older-version link, iPadOS, mobile step order ([1d59277](https://github.com/peetzweg/opendisplay/commit/1d59277bc1402f609a47d5fa184c93ee5351f34c))
+* **web:** refine feature copy and reorder the grid ([a4e0799](https://github.com/peetzweg/opendisplay/commit/a4e0799a4ce6e2bb3ddd896e8113e1136f6df03f))
+* **web:** reorder sections, Ko-fi branding, cost transparency, scroll-spy ([36105d3](https://github.com/peetzweg/opendisplay/commit/36105d3b1624f869ba7ce2fea29227281ceb7468))
+* **web:** serve site from opendisplay.app custom domain ([712918f](https://github.com/peetzweg/opendisplay/commit/712918f21ca03c9a457a75766165896b2f7c99a2))
+
+
+### Bug Fixes
+
+* **ci:** guard Sparkle appcast step via env, not secrets context ([acd23b5](https://github.com/peetzweg/opendisplay/commit/acd23b5ca0fb087908494ada816cb3cb16ecf197))
+* **ci:** release workflow fails at startup (secrets in if:) ([ff2e82f](https://github.com/peetzweg/opendisplay/commit/ff2e82f31f96973aee70674f648d56b4c47c2788))
+
 ## [0.9.0](https://github.com/peetzweg/opendisplay/compare/v0.8.0...v0.9.0) (2026-06-30)
 
 
