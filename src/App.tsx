@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import Showcase from "./components/Showcase"
+import SupportNudge from "./components/SupportNudge"
 import TextRotate from "./components/TextRotate"
 
 const HERO_WORDS = [
@@ -174,15 +175,6 @@ export default function App() {
             scroll. No subscription. No dongle. No account.
           </p>
           <p className="meta">macOS 14+ &nbsp;·&nbsp; iPadOS 17+ &nbsp;·&nbsp; iOS 17+ &nbsp;·&nbsp; GPL-3.0</p>
-          <a className="kofi-banner" href="#support">
-            <span className="kofi-banner-left">
-              <img className="kofi-mark" src="kofi-mark.webp" alt="" width="24" height="24" />
-              <span className="kofi-banner-text">Free, and built by one person.</span>
-            </span>
-            <span className="kofi-banner-cta">
-              Support me<span className="kofi-banner-arrow">↓</span>
-            </span>
-          </a>
 
           <p className="needs-both">
             OpenDisplay is <strong>two apps that work together</strong> — install both to get going.
@@ -248,6 +240,8 @@ export default function App() {
         </div>
       </section>
 
+      <SupportNudge />
+
       <section id="demo">
         <div className="wrap sec">
           <p className="eyebrow">Demo</p>
@@ -258,17 +252,10 @@ export default function App() {
             <a href="https://x.com/peetzweg">Tag @peetzweg on X</a> and your setup might
             end up here.
           </p>
-          <a className="kofi-banner" href="#support">
-            <span className="kofi-banner-left">
-              <img className="kofi-mark" src="kofi-mark.webp" alt="" width="24" height="24" />
-              <span className="kofi-banner-text">Free, and built by one person.</span>
-            </span>
-            <span className="kofi-banner-cta">
-              Support me<span className="kofi-banner-arrow">↓</span>
-            </span>
-          </a>
         </div>
       </section>
+
+      <SupportNudge />
 
       <section id="support">
         <div className="wrap sec support">
