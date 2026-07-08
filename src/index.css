@@ -300,7 +300,10 @@ details p { color: var(--muted); padding: 0 0 24px; max-width: 78ch; }
   transition: transform 0.15s ease; }
 .support-nudge:hover .kofi-banner-arrow { transform: translateY(3px); }
 @media (max-width: 560px) {
-  .support-nudge { width: auto; flex-direction: column; gap: 6px; text-align: center; }
+  /* Full-width band: drop the side borders (and now-orphaned corner radius) so
+     only the top/bottom rules remain. */
+  .support-nudge { width: auto; flex-direction: column; gap: 6px; text-align: center;
+    border-left: 0; border-right: 0; border-radius: 0; }
 }
 
 /* ---- footer ---- */
