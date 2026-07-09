@@ -179,6 +179,10 @@ a.showcase-item.is-post:hover { border-color: var(--line-strong); }
 .post-x { width: 18px; height: 18px; fill: var(--faint); margin-left: auto; flex: none; }
 .showcase-item.is-post:hover .post-x { fill: var(--fg); }
 .post-text { font-size: 0.95rem; margin: 0; }
+.post-text + .post-text { margin-top: 0.5em; }
+.post-trans { font-size: 0.9rem; line-height: 1.45; margin: 12px 0 0;
+  color: var(--muted); font-style: italic; }
+.post-trans + .post-trans { margin-top: 0.5em; }
 .post-photo { display: block; width: 100%; height: auto; border-radius: 8px;
   margin: 14px 0 12px; border: 1px solid var(--line); }
 .post-date { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.04em;
