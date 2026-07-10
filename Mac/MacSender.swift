@@ -268,10 +268,23 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         let serial = info.pixelsWide >= info.pixelsHigh
             ? displaySerial
             : displaySerial ^ 0x8000_0000
+        // Arrangement memory (#116): keyed on the device's install id so the
+        // display returns to its spot across transports and orientations —
+        // the serial-keyed memory macOS keeps starts from scratch whenever
+        // the serial changes. Old receivers without an id fall back to the
+        // session serial, which is at least orientation-stable.
+        let arrangementKey = info.id ?? String(format: "serial-%08x", displaySerial)
+        let sizeInPoints = CGSize(width: pointsWide, height: pointsHigh)
         let vd = await MainActor.run {
             VirtualDisplay(name: displayName,
                            pointsWide: pointsWide, pointsHigh: pointsHigh,
-                           sizeInMillimeters: mm, serialNum: serial)
+                           sizeInMillimeters: mm, serialNum: serial,
+                           restoreOrigin: DisplayArrangement.origin(for: sizeInPoints,
+                                                                    device: arrangementKey),
+                           onOriginChange: { origin in
+                               DisplayArrangement.save(origin: origin, size: sizeInPoints,
+                                                       device: arrangementKey)
+                           })
         }
         guard let vd else {
             throw NSError(domain: "MacSender", code: 2,
