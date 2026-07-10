@@ -277,16 +277,27 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // session serial, which is at least orientation-stable.
         let arrangementKey = info.id ?? String(format: "serial-%08x", displaySerial)
         let sizeInPoints = CGSize(width: pointsWide, height: pointsHigh)
-        let vd = await MainActor.run {
-            VirtualDisplay(name: displayName,
-                           pointsWide: pointsWide, pointsHigh: pointsHigh,
-                           sizeInMillimeters: mm, serialNum: serial,
-                           restoreOrigin: DisplayArrangement.origin(for: sizeInPoints,
-                                                                    device: arrangementKey),
-                           onOriginChange: { origin in
-                               DisplayArrangement.save(origin: origin, size: sizeInPoints,
-                                                       device: arrangementKey)
-                           })
+        // Creating a display whose serial is still registered fails — e.g. a
+        // just-quit instance's display lingers in WindowServer for a moment
+        // after the process dies. Retry through that window instead of
+        // parking the session on "Failed" until a manual reconnect.
+        var vd: VirtualDisplay?
+        for attempt in 0..<8 {
+            if attempt > 0 { try await Task.sleep(for: .seconds(2)) }
+            vd = await MainActor.run {
+                VirtualDisplay(name: displayName,
+                               pointsWide: pointsWide, pointsHigh: pointsHigh,
+                               sizeInMillimeters: mm, serialNum: serial,
+                               restoreOrigin: DisplayArrangement.origin(for: sizeInPoints,
+                                                                        device: arrangementKey),
+                               onOriginChange: { origin in
+                                   DisplayArrangement.save(origin: origin, size: sizeInPoints,
+                                                           device: arrangementKey)
+                               })
+            }
+            if vd != nil { break }
+            Log.info("virtual display creation failed (attempt \(attempt + 1)) — retrying")
+            await status("Preparing virtual display…")
         }
         guard let vd else {
             throw NSError(domain: "MacSender", code: 2,
