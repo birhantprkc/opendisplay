@@ -104,7 +104,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private let queue = DispatchQueue(label: "sender.video")
     private let startCode: [UInt8] = [0, 0, 0, 1]
 
-    private let transport: SenderTransport
+    // The dial target. Written on `queue` only (after init): the controller
+    // can migrate a live session between transports via switchTransport.
+    private var transport: SenderTransport
     private let endpointName: String
     private let mode: CaptureMode
     private let quality: StreamQuality
@@ -275,16 +277,33 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // session serial, which is at least orientation-stable.
         let arrangementKey = info.id ?? String(format: "serial-%08x", displaySerial)
         let sizeInPoints = CGSize(width: pointsWide, height: pointsHigh)
-        let vd = await MainActor.run {
-            VirtualDisplay(name: displayName,
-                           pointsWide: pointsWide, pointsHigh: pointsHigh,
-                           sizeInMillimeters: mm, serialNum: serial,
-                           restoreOrigin: DisplayArrangement.origin(for: sizeInPoints,
-                                                                    device: arrangementKey),
-                           onOriginChange: { origin in
-                               DisplayArrangement.save(origin: origin, size: sizeInPoints,
-                                                       device: arrangementKey)
-                           })
+        // Creating a display whose serial is still registered fails — e.g. a
+        // just-quit instance's display lingers in WindowServer for a moment
+        // after the process dies. Retry through that window instead of
+        // parking the session on "Failed" until a manual reconnect.
+        var vd: VirtualDisplay?
+        for attempt in 0..<8 {
+            if attempt > 0 { try await Task.sleep(for: .seconds(2)) }
+            // A Disconnect during the retry window tore the session down. Bail
+            // before creating/assigning the display: the serial the old display
+            // held is likely free now, so a late attempt would *succeed* and
+            // resurrect the very zombie this retry exists to avoid. (Mirrors the
+            // `if stopped` checks in the permission-poll loops above.)
+            if stopped { return }
+            vd = await MainActor.run {
+                VirtualDisplay(name: displayName,
+                               pointsWide: pointsWide, pointsHigh: pointsHigh,
+                               sizeInMillimeters: mm, serialNum: serial,
+                               restoreOrigin: DisplayArrangement.origin(for: sizeInPoints,
+                                                                        device: arrangementKey),
+                               onOriginChange: { origin in
+                                   DisplayArrangement.save(origin: origin, size: sizeInPoints,
+                                                           device: arrangementKey)
+                               })
+            }
+            if vd != nil { break }
+            Log.info("virtual display creation failed (attempt \(attempt + 1)) — retrying")
+            await status("Preparing virtual display…")
         }
         guard let vd else {
             throw NSError(domain: "MacSender", code: 2,
@@ -407,6 +426,32 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // Unblock a start() that is still waiting for the hello.
             self?.helloContinuation?.resume(throwing: CancellationError())
             self?.helloContinuation = nil
+        }
+    }
+
+    /// Migrate the live session to another transport: swap the socket under
+    /// the pipeline — virtual display, capture and encoder stay up (no
+    /// display destroy/create, so no screen flash and no window reshuffle)
+    /// while the connection redials over the new transport. The receiver
+    /// treats it like any reconnect: the fresh connection replaces the old
+    /// one and the video resyncs with a keyframe. Which transport to be on
+    /// is the controller's call (cable-in upgrade, unplug failover).
+    func switchTransport(to newTransport: SenderTransport) {
+        queue.async { [weak self] in
+            guard let self, !self.stopped else { return }
+            let label = if case .usb = newTransport { "USB" } else { "WiFi" }
+            Log.info("switching \(self.endpointName) to \(label)")
+            self.transport = newTransport
+            // Fresh grace window: if the new link can't come up either, the
+            // session ends like any other disconnect instead of dialing
+            // a dead transport forever.
+            self.disconnectedSince = Date()
+            self.connectionReady = false
+            self.dialGeneration += 1   // a dial still in flight must not adopt
+            self.connection?.cancel()
+            self.connection = nil
+            self.pendingSends = 0
+            self.connect()
         }
     }
 
@@ -578,11 +623,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         connectionReady = false
         dialGeneration += 1   // a USB dial still in flight must not adopt
+        let generation = dialGeneration
         connection?.cancel()
         connection = nil
         pendingSends = 0
         queue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.connect()
+            // Generation-guarded so a switchTransport (or another reconnect)
+            // that landed in this 1s window supersedes this dial instead of
+            // racing it — otherwise the queued connect() re-dials the new
+            // transport, briefly running two live connections. (No bare
+            // self-rescheduling asyncAfter — the pattern banned in #76.)
+            guard let self, generation == self.dialGeneration, !self.stopped else { return }
+            self.connect()
         }
     }
 
