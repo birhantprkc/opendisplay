@@ -110,7 +110,7 @@ next to the Sparkle appcast:
   {
     "ios": {
       "hardMinimumVersion": "0.0.0",
-      "recommendedVersion": "0.11.0",
+      "recommendedVersion": "1.12.0",
       "storeURL": "itms-apps://apps.apple.com/app/id6780264891",
       "message": "…"
     }
