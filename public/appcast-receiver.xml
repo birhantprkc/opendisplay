@@ -3,12 +3,12 @@
     <channel>
         <title>OpenDisplay Receiver</title>
         <item>
-            <title>1.20.0</title>
-            <pubDate>Fri, 18 Sep 2026 08:36:03 +0000</pubDate>
-            <sparkle:version>155</sparkle:version>
-            <sparkle:shortVersionString>1.20.0</sparkle:shortVersionString>
+            <title>1.21.0</title>
+            <pubDate>Fri, 18 Sep 2026 16:36:29 +0000</pubDate>
+            <sparkle:version>157</sparkle:version>
+            <sparkle:shortVersionString>1.21.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/peetzweg/opendisplay/releases/download/v1.20.0/OpenDisplayReceiver.dmg" length="1831184" type="application/octet-stream" sparkle:edSignature="j5P75xxUgNzEEfWY/3E5c9ky1odTpeitGWcbuSKaoCq9HHD1hpuPEeneKxakXcoMcdItPMSzKFC9A+c3XuFPCg=="/>
+            <enclosure url="https://github.com/peetzweg/opendisplay/releases/download/v1.21.0/OpenDisplayReceiver.dmg" length="1825954" type="application/octet-stream" sparkle:edSignature="6Mq55MS8J44cgBbZ5eF16+5FpkQzBRgmr1d7Gr+7GrF8UFHbWmRVUyTGlzOqpZIFNZVWhPCG4rgHboYOvX3BAA=="/>
         </item>
     </channel>
 </rss>
