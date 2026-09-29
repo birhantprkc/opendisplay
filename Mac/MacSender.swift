@@ -187,6 +187,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // `queue`.
     private var captureRecoveryFailures = 0
     private let maxCaptureRecoveryFailures = 5
+    // Display sleep and screen lock make every recovery attempt fail until
+    // the user is back, so rounds are deferred instead of spent on them —
+    // otherwise any sleep longer than the budget ends the session. Set while
+    // deferring so the wait logs once. On `queue`.
+    private var waitingForConsole = false
+    // The one pending recovery tick, cancelled and replaced on every arm so
+    // a stream dying while a round is in flight can't leave two chains
+    // running (both would fire on unlock and race `startCapture`, orphaning
+    // an SCStream). A tick that finds a round in flight leaves re-arming to
+    // that round. On `queue`.
+    private var captureRecoveryWork: DispatchWorkItem?
+    private var captureRecoveryInFlight = false
 
     // Consecutive actively-refused dials on a previously connected session.
     // Refusal is unambiguous: the device is reachable but nothing listens,
@@ -906,7 +918,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // this, a pending recovery timer that finds the stream alive exits
         // without ever resetting the counter, and the next unrelated death
         // starts with as little as one round left.
-        queue.async { self.captureRecoveryFailures = 0 }
+        queue.async {
+            self.captureRecoveryFailures = 0
+            self.waitingForConsole = false
+        }
         Log.info("capture started: \(pixelsWide)x\(pixelsHigh) display \(display.displayID) generation \(generation) mode \(mode.rawValue) localCursor=\(localCursor)")
         let kind = lastHello?.kind ?? "device"
         await status("\(mode == .extend ? "Extending to" : "Mirroring to") \(kind) (\(pixelsWide)×\(pixelsHigh))")
@@ -928,6 +943,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         queue.async { [weak self] in
             self?.closeCursorChannel()
             self?.stopUpgradeProbing()
+            self?.captureRecoveryWork?.cancel()
+            self?.captureRecoveryWork = nil
         }
         if let encoder { VTCompressionSessionInvalidate(encoder) }
         encoder = nil
@@ -1105,41 +1122,64 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// the infinite rebuild loop. Only do a full `reconfigure` when the display
     /// is actually gone (e.g. display sleep tore it down).
     private func scheduleCaptureRecovery() {
-        queue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            guard let self, !self.stopped, self.stream == nil,
-                  let hello = self.lastHello else { return }
-            // Does our virtual display still exist? CGDisplayBounds returns a
-            // zero rect for an unknown id, so a non-empty bounds means it's live.
-            // Test isEmpty, not isNull: isNull is only true for the special
-            // CGRect.null, so it reads as "live" for a dead display too and the
-            // rebuild fallback below would become unreachable.
-            if let vd = self.virtualDisplay,
-               !CGDisplayBounds(vd.displayID).isEmpty {
-                Log.info("capture died — display still present, re-attaching capture only (#29)")
-                Task {
-                    do {
-                        let display = try await self.findSCDisplay(id: vd.displayID)
-                        // Capture at the display's pixel resolution (points ×2 @2x),
-                        // not SCDisplay.width (logical points) — matches setupExtend.
-                        try await self.startCapture(display: display,
-                                                    sourcePixelsWide: vd.pointsWide * 2,
-                                                    sourcePixelsHigh: vd.pointsHigh * 2,
-                                                    receiver: hello)
-                        self.needsKeyframe = true
-                    } catch {
-                        Log.info("re-attach failed (\(error)) — falling back to full rebuild")
-                        await self.reconfigure(hello)
-                    }
-                    self.queue.async { self.recoveryRoundEnded() }
-                }
-                return
+        queue.async { [weak self] in
+            guard let self, !self.stopped else { return }
+            self.captureRecoveryWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.runCaptureRecoveryRound() }
+            self.captureRecoveryWork = work
+            self.queue.asyncAfter(deadline: .now() + 3.0, execute: work)
+        }
+    }
+
+    /// On `queue`: one recovery tick armed by `scheduleCaptureRecovery`.
+    private func runCaptureRecoveryRound() {
+        captureRecoveryWork = nil
+        guard !stopped, !captureRecoveryInFlight, stream == nil,
+              let hello = lastHello else { return }
+        guard consoleCanCapture else {
+            if !waitingForConsole {
+                waitingForConsole = true
+                Log.info("capture down while the display sleeps or the screen is locked — waiting for the user before retrying")
             }
-            // Display genuinely gone — full rebuild (preserves old behavior).
-            Log.info("capture died — rebuilding pipeline")
+            scheduleCaptureRecovery()
+            return
+        }
+        if waitingForConsole {
+            waitingForConsole = false
+            Log.info("console is back — resuming capture recovery")
+        }
+        captureRecoveryInFlight = true
+        // Does our virtual display still exist? CGDisplayBounds returns a
+        // zero rect for an unknown id, so a non-empty bounds means it's live.
+        // Test isEmpty, not isNull: isNull is only true for the special
+        // CGRect.null, so it reads as "live" for a dead display too and the
+        // rebuild fallback below would become unreachable.
+        if let vd = self.virtualDisplay,
+           !CGDisplayBounds(vd.displayID).isEmpty {
+            Log.info("capture died — display still present, re-attaching capture only (#29)")
             Task {
-                await self.reconfigure(hello)
+                do {
+                    let display = try await self.findSCDisplay(id: vd.displayID)
+                    // Capture at the display's pixel resolution (points ×2 @2x),
+                    // not SCDisplay.width (logical points) — matches setupExtend.
+                    try await self.startCapture(display: display,
+                                                sourcePixelsWide: vd.pointsWide * 2,
+                                                sourcePixelsHigh: vd.pointsHigh * 2,
+                                                receiver: hello)
+                    self.needsKeyframe = true
+                } catch {
+                    Log.info("re-attach failed (\(error)) — falling back to full rebuild")
+                    await self.reconfigure(hello)
+                }
                 self.queue.async { self.recoveryRoundEnded() }
             }
+            return
+        }
+        // Display genuinely gone — full rebuild (preserves old behavior).
+        Log.info("capture died — rebuilding pipeline")
+        Task {
+            await self.reconfigure(hello)
+            self.queue.async { self.recoveryRoundEnded() }
         }
     }
 
@@ -1156,12 +1196,21 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         return onConsole && !locked
     }
 
+    /// Whether a recovery attempt can succeed right now. SCK finds no
+    /// capturable displays while the main display sleeps or the screen is
+    /// locked (display sleep drops capture seconds before the lock engages),
+    /// so attempts then are doomed and must not count against the budget.
+    private var consoleCanCapture: Bool {
+        consoleIsInteractive && CGDisplayIsAsleep(CGMainDisplayID()) == 0
+    }
+
     /// On `queue`: after a recovery round, re-arm the loop while capture is
     /// still down — up to the cap, then declare the session gone. A capture
     /// dead this many rounds is not coming back by itself, and ending the
     /// session (display torn down, reconnect is the user's call) beats
     /// hammering WindowServer with create/destroy cycles forever.
     private func recoveryRoundEnded() {
+        captureRecoveryInFlight = false
         guard stream == nil else {
             captureRecoveryFailures = 0
             return
