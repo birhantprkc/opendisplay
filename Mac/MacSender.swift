@@ -39,7 +39,7 @@ struct PhoneInfo: Decodable {
     let addrs: [String]?  // every address the receiver is reachable on
                           // (PROTOCOL.md 6.4); probed for a cable upgrade
     let maxEncodeWide: Int?  // receiver's decode ceiling in pixels (PROTOCOL.md
-    let maxEncodeHigh: Int?  //  6.5): cap the stream, keep the desktop size
+    let maxEncodeHigh: Int?  //  6.5): caps the stream, and with it the desktop
     let displayMaxFrameRate: Int?       // presentation ceiling; absent = legacy 60
     let videoCaps: [VideoCapability]?   // codec-specific joint decode constraints
 
@@ -337,6 +337,21 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Debounced replay after encoder/send backpressure drops a frame.
     /// At most one timer is active; each new drop resets the 30ms deadline.
     private var dropReplayTimer: DispatchSourceTimer?
+    #if DEBUG
+    /// Settle refinement (#322 step 2, Debug-only experiment): once capture has been
+    /// quiet for `refineIdleMs`, re-encode `lastPixelBuffer` for
+    /// `refineFrames` frames at `refineBoost` x the base bitrate. One timer,
+    /// cancelled and replaced by every changed capture frame.
+    private let refineFrames = UserDefaults.standard.integer(forKey: "refineFrames")
+    private let refineBoost = UserDefaults.standard.object(forKey: "refineBoost") == nil
+        ? 4.0 : UserDefaults.standard.double(forKey: "refineBoost")
+    private let refineIdleMs = UserDefaults.standard.object(forKey: "refineIdleMs") == nil
+        ? 150 : UserDefaults.standard.integer(forKey: "refineIdleMs")
+    private var refineTimer: DispatchSourceTimer?
+    private var refineRemaining = 0
+    #endif
+    /// Bitrate the encoder was configured with; refinement restores it.
+    private var baseBitrate = 0
 
     init(transport: SenderTransport, name: String, mode: CaptureMode,
          quality: StreamQuality = .best, displaySerial: UInt32 = 0x0001,
@@ -428,14 +443,43 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Build (or rebuild) the virtual display + capture for the announced
     /// phone dimensions. Called at startup and again whenever the phone
     /// rotates (it re-sends hello with swapped dimensions).
+    /// Canvas pixels for the receiver's panel: capped at the stream size so
+    /// capture is 1:1 (see `H264StreamConfiguration.canvasPixels`).
+    /// Debug builds: `-canvasAtStreamSize NO` restores a panel-sized canvas for A/B tests.
+    private func canvasPixels(for info: PhoneInfo) -> PixelSize {
+        let panel = PixelSize(width: info.pixelsWide, height: info.pixelsHigh)
+        #if DEBUG
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "canvasAtStreamSize") != nil,
+           !defaults.bool(forKey: "canvasAtStreamSize") { return panel }
+        #endif
+        let canvas = H264StreamConfiguration.canvasPixels(
+            forReceiver: panel,
+            legacyCeiling: legacyEncodeCeiling(for: info),
+            receiverCapabilities: info.videoCaps,
+            displayMaxFrameRate: info.displayMaxFrameRate)
+        if canvas != panel {
+            Log.info("canvas capped at the stream size: \(canvas.width)x\(canvas.height) "
+                + "for a \(panel.width)x\(panel.height) panel")
+        }
+        return canvas
+    }
+
+    private func legacyEncodeCeiling(for info: PhoneInfo) -> PixelSize? {
+        guard let maxW = info.maxEncodeWide, let maxH = info.maxEncodeHigh,
+              maxW > 0, maxH > 0 else { return nil }
+        return PixelSize(width: maxW, height: maxH)
+    }
+
     private func setupExtend(_ info: PhoneInfo) async throws {
         Log.info("phone hello: \(info.pixelsWide)x\(info.pixelsHigh) @\(info.scale)x")
 
         // The virtual display runs @2x HiDPI. Large modes are applied only
         // after a conservative bootstrap mode is online; some saved macOS
         // display states reject the same mode when it is present at creation.
+        let canvas = canvasPixels(for: info)
         guard let canvasPlan = VirtualCanvasSizing.plan(
-            pixelsWide: info.pixelsWide, pixelsHigh: info.pixelsHigh) else {
+            pixelsWide: canvas.width, pixelsHigh: canvas.height) else {
             throw NSError(domain: "MacSender", code: 7,
                           userInfo: [NSLocalizedDescriptionKey: "the receiver reported an invalid display size"])
         }
@@ -632,7 +676,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         defer { reconfiguring = false }
         var target = info
         while !stopped {
-            Log.info("reconfiguring stream for \(target.pixelsWide)x\(target.pixelsHigh)")
+            Log.info("reconfiguring stream for a \(target.pixelsWide)x\(target.pixelsHigh) panel")
             // A cached frame is valid for a network reconnect to the same
             // display, but never for a rotation: it belongs to the retired
             // desktop and can otherwise be replayed onto the new one.
@@ -694,15 +738,17 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     /// Apply a rotated mode when needed and restart the capture/encoder pieces.
-    /// A capability-only update leaves the virtual display mode untouched.
+    /// The canvas follows the panel and the stream cap (`canvasPixels`), so a
+    /// capability update that changes the cap also resizes the desktop.
     /// Returns false only when there is no reusable display or its previous
     /// canvas cannot be recovered, letting the caller rebuild as a last resort.
     private func resizeExistingDisplay(for info: PhoneInfo) async throws -> Bool {
         guard let vd = virtualDisplay else { return false }
         try ensureActiveDisplay(vd)
 
-        let pointsWide = (info.pixelsWide / 2) & ~1
-        let pointsHigh = (info.pixelsHigh / 2) & ~1
+        let canvas = canvasPixels(for: info)
+        let pointsWide = (canvas.width / 2) & ~1
+        let pointsHigh = (canvas.height / 2) & ~1
         let arrangementKey = info.id ?? String(format: "serial-%08x", displaySerial)
         let size = CGSize(width: pointsWide, height: pointsHigh)
         let previous = VirtualCanvasSize(pointsWide: vd.pointsWide,
@@ -838,19 +884,24 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                               receiver info: PhoneInfo) async throws {
         try Task.checkCancellation()
         guard !stopped else { throw CancellationError() }
-        let legacyCeiling: PixelSize?
-        if let maxW = info.maxEncodeWide, let maxH = info.maxEncodeHigh,
-           maxW > 0, maxH > 0 {
-            legacyCeiling = PixelSize(width: maxW, height: maxH)
-        } else {
-            legacyCeiling = nil
-        }
-        let selected = try H264StreamConfiguration.make(
-            source: PixelSize(width: sourcePixelsWide, height: sourcePixelsHigh),
-            quality: quality,
-            legacyCeiling: legacyCeiling,
-            receiverCapabilities: info.videoCaps,
-            displayMaxFrameRate: info.displayMaxFrameRate)
+        let legacyCeiling = legacyEncodeCeiling(for: info)
+        let source = PixelSize(width: sourcePixelsWide, height: sourcePixelsHigh)
+        // Extend captures our own virtual display, whose canvas may be capped
+        // below the panel; presets keep scaling from the panel (#322).
+        let selected = mode == .extend
+            ? try H264StreamConfiguration.makeForCanvas(
+                source,
+                panel: PixelSize(width: info.pixelsWide, height: info.pixelsHigh),
+                quality: quality,
+                legacyCeiling: legacyCeiling,
+                receiverCapabilities: info.videoCaps,
+                displayMaxFrameRate: info.displayMaxFrameRate)
+            : try H264StreamConfiguration.make(
+                source: source,
+                quality: quality,
+                legacyCeiling: legacyCeiling,
+                receiverCapabilities: info.videoCaps,
+                displayMaxFrameRate: info.displayMaxFrameRate)
         let pixelsWide = selected.encodedSize.width
         let pixelsHigh = selected.encodedSize.height
         let sourceDescription = "\(sourcePixelsWide)x\(sourcePixelsHigh)"
@@ -950,6 +1001,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         encoder = nil
         virtualDisplay = nil   // releasing it removes the display
         cancelDropReplayTimer()
+        #if DEBUG
+        queue.async { [weak self] in self?.cancelSettleRefinement() }
+        #endif
         queue.async { [weak self] in
             // Unblock a start() that is still waiting for the hello.
             self?.helloContinuation?.resume(throwing: CancellationError())
@@ -2232,13 +2286,19 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 3600 as CFNumber)
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: 60 as CFNumber)
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
+        baseBitrate = configuration.bitrate
+        #if DEBUG
+        // -bitrate <Mbps>: dev override for the wired-bitrate A/B (#322 step 1).
+        let bitrateOverride = UserDefaults.standard.integer(forKey: "bitrate")
+        if bitrateOverride > 0 { baseBitrate = bitrateOverride * 1_000_000 }
+        #endif
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_AverageBitRate,
-                             value: configuration.bitrate as CFNumber)
+                             value: baseBitrate as CFNumber)
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_ExpectedFrameRate,
                              value: configuration.framesPerSecond as CFNumber)
         VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
         VTCompressionSessionPrepareToEncodeFrames(encoder)
-        Log.info("encoder ready: \(width)x\(height) H.264 \(configuration.bitrate / 1_000_000)Mbps @\(configuration.framesPerSecond)fps quality=\(quality.rawValue) lowLatencyRC=\(lowLatency && !usedFallback)\(usedFallback ? " (fallback)" : "")")
+        Log.info("encoder ready: \(width)x\(height) H.264 \(baseBitrate / 1_000_000)Mbps @\(configuration.framesPerSecond)fps quality=\(quality.rawValue) lowLatencyRC=\(lowLatency && !usedFallback)\(usedFallback ? " (fallback)" : "")")
     }
 
     // MARK: - Capture callback
@@ -2257,6 +2317,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         lastPixelBuffer = pixelBuffer
         lastCaptureAt = Date()
         capFrames += 1
+        #if DEBUG
+        scheduleSettleRefinement()
+        #endif
 
         // No receiver, or a pipeline stage is backed up: skip this frame.
         guard connectionReady else { return }
@@ -2295,6 +2358,59 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         dropReplayTimer?.cancel()
         dropReplayTimer = nil
     }
+
+    #if DEBUG
+    /// Restart the settle countdown (must be called on `queue`). A changed
+    /// frame also ends any refinement in progress and restores the base rate
+    /// before that frame is encoded.
+    private func scheduleSettleRefinement() {
+        guard refineFrames > 0 else { return }
+        cancelSettleRefinement()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        let interval = max(1, Int(ceil(1_000 / Double(activeStreamConfigurationSnapshot?.framesPerSecond ?? 60))))
+        timer.schedule(deadline: .now() + .milliseconds(refineIdleMs),
+                       repeating: .milliseconds(interval))
+        refineRemaining = refineFrames
+        timer.setEventHandler { [weak self] in self?.refineStep() }
+        timer.resume()
+        refineTimer = timer
+    }
+
+    private func cancelSettleRefinement() {
+        guard let timer = refineTimer else { return }
+        timer.cancel()
+        refineTimer = nil
+        if refineRemaining < refineFrames { setEncoderBitrate(baseBitrate) }
+        refineRemaining = 0
+    }
+
+    private func refineStep() {
+        guard !stopped, connectionReady, let pixelBuffer = lastPixelBuffer else {
+            cancelSettleRefinement()
+            return
+        }
+        // Wait out backpressure; the timer ticks again one frame later.
+        if isPipelineBackedUp() { return }
+        if refineRemaining == refineFrames {
+            setEncoderBitrate(Int(Double(baseBitrate) * refineBoost))
+            Log.info("settle refinement: \(refineFrames) frames at \(refineBoost)x")
+        }
+        refineRemaining -= 1
+        encode(pixelBuffer, pts: CMClockGetTime(CMClockGetHostTimeClock()),
+               generation: captureGenerationNow)
+        if refineRemaining <= 0 {
+            refineTimer?.cancel()
+            refineTimer = nil
+            setEncoderBitrate(baseBitrate)
+        }
+    }
+
+    private func setEncoderBitrate(_ bitrate: Int) {
+        guard let encoder, bitrate > 0 else { return }
+        VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_AverageBitRate,
+                             value: bitrate as CFNumber)
+    }
+    #endif
 
     /// Re-encode the most recent pixel buffer once backpressure clears.
     private func replayLastFrameAfterDrop() {

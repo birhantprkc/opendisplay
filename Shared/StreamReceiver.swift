@@ -115,6 +115,9 @@ final class StreamReceiver: ObservableObject {
     private let queue = DispatchQueue(label: "receiver.video")
     private var buffer = Data()
     private var formatDesc: CMVideoFormatDescription?
+    #if DEBUG
+    private let idleFrameDumper = IdleFrameDumper.makeIfEnabled()
+    #endif
     private var sps: Data?
     private var pps: Data?
 
@@ -1150,7 +1153,15 @@ final class StreamReceiver: ObservableObject {
                 )
                 if status == noErr, let formatDesc {
                     let dims = CMVideoFormatDescriptionGetDimensions(formatDesc)
-                    Log.info("format description built: \(dims.width)x\(dims.height)")
+                    // Colour tags come from the SPS VUI. A BT.709 transfer tag on
+                    // desktop content makes the display lift shadows (#322).
+                    func tag(_ key: CFString) -> String {
+                        (CMFormatDescriptionGetExtension(formatDesc, extensionKey: key) as? String) ?? "-"
+                    }
+                    Log.info("format description built: \(dims.width)x\(dims.height) "
+                        + "primaries=\(tag(kCMFormatDescriptionExtension_ColorPrimaries)) "
+                        + "transfer=\(tag(kCMFormatDescriptionExtension_TransferFunction)) "
+                        + "matrix=\(tag(kCMFormatDescriptionExtension_YCbCrMatrix))")
                     DispatchQueue.main.async {
                         self.videoSize = CGSize(width: Int(dims.width), height: Int(dims.height))
                     }
@@ -1208,6 +1219,9 @@ final class StreamReceiver: ObservableObject {
             sampleBufferOut: &sample)
 
         guard let sample else { return }
+        #if DEBUG
+        idleFrameDumper?.push(sample)
+        #endif
 
         if loggedDisplayPath != (useMetalPath && onDecodedFrame != nil) {
             loggedDisplayPath = useMetalPath && onDecodedFrame != nil
