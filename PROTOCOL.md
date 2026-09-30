@@ -134,7 +134,7 @@ Every message in **both directions** is length-prefixed:
 All receiver-to-sender frames are JSON control messages, so the sender
 needs no demux.
 
-Sender-to-receiver frames carry both H.264 video and JSON control messages
+Sender-to-receiver frames carry both video and JSON control messages
 on the same connection. At `pv <= 3` the receiver distinguishes them
 **heuristically**. A frame is a JSON control message if and only if all
 three hold:
@@ -170,8 +170,10 @@ control data to route it to the video path).
 
 ## 5. Video
 
-The video stream is **H.264 Annex B**, one *access unit* (one encoded
-picture) per wire frame.
+The implicit legacy video stream is **H.264 Annex B**. A sender may select
+**HEVC Annex B** only after an affirmative `hello.videoCaps` offer and must
+announce it in `streamConfig` before video. Each wire frame carries one
+*access unit* (one encoded picture).
 
 ### 5.1 Frame layout
 
@@ -191,9 +193,10 @@ picture) per wire frame.
   3-byte start codes; receivers MAY therefore split on the 4-byte pattern
   only. (A receiver that also handles 3-byte codes works today by accident;
   do not rely on it in either direction.)
-* **Keyframes carry their parameter sets.** Every IDR frame MUST be
-  prefixed with the current SPS and PPS NALUs. Non-keyframes carry only
-  slice data (plus optional SEI, which receivers MAY skip).
+* **Keyframes carry their parameter sets.** Every H.264 IDR frame MUST be
+  prefixed with SPS and PPS NALUs. Every HEVC IDR frame MUST be prefixed with
+  VPS, SPS, and PPS NALUs. Non-keyframes carry picture data (plus optional
+  SEI, which receivers MAY skip).
 * All slices of one picture MUST travel in one wire frame; receivers SHOULD
   decode each wire frame as one sample.
 * **No presentation timestamps** cross the wire. The stream is low-latency
@@ -208,7 +211,7 @@ quality presets). Receivers MUST take the video dimensions from the SPS,
 never from `hello`.
 
 When the stream changes size (device rotation, quality change), the sender
-simply starts sending frames with new SPS/PPS. Receivers MUST detect the
+simply starts sending frames with new parameter sets. Receivers MUST detect the
 parameter-set change, rebuild their decoder, and discard buffered frames
 from the old format.
 
@@ -492,8 +495,8 @@ instead of a silent failure.
 
 **`streamConfig`** announces the sender's selected video configuration before
 the first video frame and again after a reconnect or stream reconfiguration.
-`codec` is a lowercase token (`"h264"` today); `width` and `height` are encoded
-pixels; `framesPerSecond` is the maximum submission rate. Receivers MUST ignore
+`codec` is a lowercase token (`"h264"` or `"hevc"`); `width` and `height` are
+encoded pixels; `framesPerSecond` is the maximum submission rate. Receivers MUST ignore
 unknown fields. A receiver that gets video without `streamConfig` MUST assume
 the legacy H.264 stream. A sender MUST NOT select a non-H.264 codec unless the
 receiver affirmatively advertised it in `videoCaps`.
@@ -515,15 +518,26 @@ be freely combined. Unknown codecs and fields MUST be ignored. The sender
 intersects a receiver entry with its own encoder constraints and the requested
 desktop/quality policy, then reports the result with `streamConfig`.
 
-The official receiver currently advertises H.264 only. This structure makes a
-future codec additive without changing the meaning of panel dimensions or
-assuming support from a peer that merely ignored an unknown field.
+Every official receiver advertises H.264. A receiver with a hardware HEVC
+decoder also advertises HEVC: the Mac receiver up to 5120×2880 at 60 FPS, the
+iOS receiver up to its panel's long side on either axis at 60 FPS, within any
+decode budget. HEVC is additive: a peer that ignores the new capability keeps
+H.264.
+
+Codec choice is the sender's, with no user setting. The official sender picks
+HEVC whenever the receiver offers it and the sender can create a hardware
+HEVC encoder at the stream size (Apple silicon today), and H.264 otherwise.
+If the HEVC encoder fails later, the sender falls back to H.264 for the rest
+of that session. On a reconnect it neither announces nor sends HEVC until the new
+connection's `hello` offers it. Receivers MUST take the codec from
+`streamConfig`, not from the bitstream.
 
 The current H.264 sender also enforces the High@L5.2 frame-size and
 macroblock-rate limits locally. For a 16:9 5K source that codec rule selects
-4096×2304 at 55 FPS; it is not a receiver-model or 5K-iMac exception. A future
-codec supplies its own encoder constraints while using the same capability
-intersection and `streamConfig` announcement.
+4096×2304 at 55 FPS; it is not a receiver-model or 5K-iMac exception. The
+HEVC raster is bounded by the receiver's HEVC entry instead, so a 5K source
+goes out at 5120×2880 when both peers offer HEVC. `framesPerSecond` stays a
+ceiling: the encoder's real throughput decides the delivered rate.
 
 `hello.maxEncodeWide` / `maxEncodeHigh` is the legacy H.264 decode ceiling:
 
@@ -550,9 +564,10 @@ quality setting). Derive advertised ceilings from measured playback: a
 decode session that merely creates successfully proves nothing.
 
 During migration, a receiver MAY send both the legacy ceiling and
-`videoCaps`. A sender that understands both MUST satisfy both. Receiver limits
-do not replace sender validation: the sender must independently keep its H.264
-raster and rate within the selected encoder's constraints.
+`videoCaps`. For H.264, a sender that understands both MUST satisfy both. The
+legacy ceiling does not limit HEVC. Receiver limits do not replace sender
+validation: the sender must independently check that its encoder accepts the
+selected codec's raster and rate.
 
 ## 7. Coordinate spaces and units
 

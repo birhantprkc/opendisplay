@@ -1,4 +1,4 @@
-// StreamReceiver — the listening half of OpenDisplay: receive H.264 over
+// StreamReceiver — the listening half of OpenDisplay: receive video over
 // TCP and display it. Compiled into BOTH targets (see project.yml): it is
 // the iOS app's core, and the Mac app's receiver mode (issue #82) reuses it
 // unchanged to turn a spare Mac into a display.
@@ -37,7 +37,9 @@ struct PerfStats: Equatable {
     var encodeP50 = 0.0          // Mac-side capture→socket (encode + queue)
     var rttMs = 0.0              // control-channel round trip
     var e2eSamples: [Double] = []  // last ~120 per-frame e2e latencies, ms
-    var transport = "—"          // USB (loopback via usbmux) or WiFi
+    var transport = "—"          // USB (loopback via usbmux), Cable (direct link) or WiFi
+    var codec = ""               // "H.264" or "HEVC" once a stream is known
+    var hitches = 0              // gaps over 1.5x the median interval (last ~120 frames)
     var cursorPerSec = 0         // cursor position updates applied (this window)
     var cursorLost = 0           // UDP cursor datagrams missing or reordered (this window)
     var macDrops = 0             // enc + net drops (legacy total)
@@ -118,6 +120,8 @@ final class StreamReceiver: ObservableObject {
     #if DEBUG
     private let idleFrameDumper = IdleFrameDumper.makeIfEnabled()
     #endif
+    private var streamCodec = "h264"
+    private var vps: Data?
     private var sps: Data?
     private var pps: Data?
 
@@ -227,6 +231,9 @@ final class StreamReceiver: ObservableObject {
     // Decode ceiling advertised in hello (PROTOCOL.md 6.5): the largest
     // stream this machine can actually sustain, which a big panel says
     // nothing about. nil = advertise nothing (sender streams full size).
+    /// HEVC decode offer (PROTOCOL.md 6.6); nil advertises H.264 only. The
+    /// platform app decides, from its hardware decoder and tested limits.
+    private let hevcCapability: VideoCapability?
     private let maxEncodeWide: Int?
     private let maxEncodeHigh: Int?
     /// Decoder throughput ceiling advertised in `hello.videoCaps`
@@ -321,8 +328,10 @@ final class StreamReceiver: ObservableObject {
 
     init(displayLayer: AVSampleBufferDisplayLayer, deviceKind: String,
          fallbackServiceName: String,
-         maxEncodeWide: Int? = nil, maxEncodeHigh: Int? = nil) {
+         maxEncodeWide: Int? = nil, maxEncodeHigh: Int? = nil,
+         hevcCapability: VideoCapability? = nil) {
         self.displayLayer = displayLayer
+        self.hevcCapability = hevcCapability
         self.deviceKind = deviceKind
         self.fallbackServiceName = fallbackServiceName
         self.maxEncodeWide = maxEncodeWide
@@ -680,6 +689,11 @@ final class StreamReceiver: ObservableObject {
         let onReady: () -> Void = { [weak self] in
             guard let self else { return }
             self.lastDataReceived = Date()
+            // Non-loopback is WiFi only if the path says so: a Mac receiver on
+            // a Thunderbolt Bridge or USB-C peer link is a cable too.
+            if self.transport != "USB", let path = conn.currentPath {
+                self.transport = path.usesInterfaceType(.wifi) ? "WiFi" : "Cable"
+            }
             self.setConnected(true)
             self.sendHello(on: conn)
         }
@@ -815,17 +829,24 @@ final class StreamReceiver: ObservableObject {
             }
         case WireMessage.streamConfig:
             // H.264 remains implicit for old senders. New senders announce the
-            // operating point so future codecs never have to be guessed from
-            // the first binary frame.
+            // codec before the first binary frame.
             let codec = (obj["codec"] as? String)?.lowercased() ?? "h264"
-            guard codec == "h264" else {
+            guard codec == "h264" || (codec == "hevc" && hevcCapability != nil) else {
                 Log.info("unsupported stream codec selected: \(codec)")
                 return
+            }
+            if streamCodec != codec {
+                streamCodec = codec
+                vps = nil
+                sps = nil
+                pps = nil
+                formatDesc = nil
+                displayLayer.flushAndRemoveImage()
             }
             let width = obj["width"] as? Int ?? 0
             let height = obj["height"] as? Int ?? 0
             let fps = obj["framesPerSecond"] as? Int ?? 0
-            Log.info("stream configuration: H.264 \(width)x\(height) @\(fps)fps")
+            Log.info("stream configuration: \(codec.uppercased()) \(width)x\(height) @\(fps)fps")
         case WireMessage.updateRequired:
             // The Mac refuses this pairing until we update from the App Store.
             let message = obj["message"] as? String
@@ -861,6 +882,8 @@ final class StreamReceiver: ObservableObject {
     private func resetStreamState() {
         buffer.removeAll(keepingCapacity: true)
         formatDesc = nil
+        streamCodec = "h264"
+        vps = nil
         sps = nil
         pps = nil
         lastFrameAt = nil
@@ -900,7 +923,17 @@ final class StreamReceiver: ObservableObject {
             h264["maxHeight"] = maxEncodeHigh
         }
         if let maxPixelsPerSecond { h264["maxPixelsPerSecond"] = maxPixelsPerSecond }
-        hello["videoCaps"] = [h264]
+        var videoCaps = [h264]
+        if let hevc = hevcCapability {
+            var entry: [String: Any] = ["codec": "hevc"]
+            if let v = hevc.maxWidth { entry["maxWidth"] = v }
+            if let v = hevc.maxHeight { entry["maxHeight"] = v }
+            if let v = hevc.maxFrameRate { entry["maxFrameRate"] = v }
+            // The decode budget describes the device's decoder, not a codec.
+            if let v = hevc.maxPixelsPerSecond ?? maxPixelsPerSecond { entry["maxPixelsPerSecond"] = v }
+            videoCaps.append(entry)
+        }
+        hello["videoCaps"] = videoCaps
         // Additive capability: only offered while the UDP listener is bound,
         // so a sender never dials a port nobody answers on.
         let announcesCursorPort = includeCursorPort && cursorListenerReady
@@ -1111,24 +1144,42 @@ final class StreamReceiver: ObservableObject {
         var vclNALUs: [Data] = []
         for nalu in nalus {
             guard let first = nalu.first else { continue }
-            switch first & 0x1F {
-            case 7:                                  // SPS (stream may change
-                if sps != nalu {                     //  size on rotation)
-                    sps = nalu
-                    formatDesc = nil
+            if streamCodec == "hevc" {
+                guard nalu.count >= 2 else { continue }
+                switch (first >> 1) & 0x3F {
+                case 32:  // VPS
+                    if vps != nalu { vps = nalu; formatDesc = nil }
+                case 33:  // SPS
+                    if sps != nalu { sps = nalu; formatDesc = nil }
+                case 34:  // PPS
+                    if pps != nalu { pps = nalu; formatDesc = nil }
+                case 0...31: vclNALUs.append(nalu)
+                default: break  // AUD, SEI, and other non-picture NALUs
                 }
-            case 8:                                  // PPS
-                if pps != nalu {
-                    pps = nalu
-                    formatDesc = nil
+            } else {
+                switch first & 0x1F {
+                case 7:                                  // SPS (stream may change
+                    if sps != nalu {                     //  size on rotation)
+                        sps = nalu
+                        formatDesc = nil
+                    }
+                case 8:                                  // PPS
+                    if pps != nalu {
+                        pps = nalu
+                        formatDesc = nil
+                    }
+                case 6: break                            // SEI — skip
+                default: vclNALUs.append(nalu)           // slice data
                 }
-            case 6: break                            // SEI — skip
-            default: vclNALUs.append(nalu)           // slice data
             }
         }
-        if formatDesc == nil, let sps, let pps {
+        if formatDesc == nil, let sps, let pps, streamCodec != "hevc" || vps != nil {
             displayLayer.flushAndRemoveImage()   // drop the previous format's last image
-            buildFormatDescription(sps: sps, pps: pps)
+            if streamCodec == "hevc", let vps {
+                buildHEVCFormatDescription(vps: vps, sps: sps, pps: pps)
+            } else if streamCodec == "h264" {
+                buildFormatDescription(sps: sps, pps: pps)
+            }
         }
         guard !vclNALUs.isEmpty else { return }
         // All slices of one wire frame go into ONE sample buffer.
@@ -1170,6 +1221,38 @@ final class StreamReceiver: ObservableObject {
                     Log.info("format description FAILED: \(status)")
                 }
             }
+        }
+    }
+
+    private func buildHEVCFormatDescription(vps: Data, sps: Data, pps: Data) {
+        vps.withUnsafeBytes { vpsBuf in
+            sps.withUnsafeBytes { spsBuf in
+                pps.withUnsafeBytes { ppsBuf in
+                    let ptrs: [UnsafePointer<UInt8>] = [
+                        vpsBuf.bindMemory(to: UInt8.self).baseAddress!,
+                        spsBuf.bindMemory(to: UInt8.self).baseAddress!,
+                        ppsBuf.bindMemory(to: UInt8.self).baseAddress!,
+                    ]
+                    let sizes = [vps.count, sps.count, pps.count]
+                    let status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                        allocator: kCFAllocatorDefault,
+                        parameterSetCount: 3,
+                        parameterSetPointers: ptrs,
+                        parameterSetSizes: sizes,
+                        nalUnitHeaderLength: 4,
+                        extensions: nil,
+                        formatDescriptionOut: &formatDesc)
+                    if status != noErr { Log.info("HEVC format description FAILED: \(status)") }
+                }
+            }
+        }
+        if let formatDesc {
+            let dims = CMVideoFormatDescriptionGetDimensions(formatDesc)
+            Log.info("HEVC format description built: \(dims.width)x\(dims.height)")
+            DispatchQueue.main.async {
+                self.videoSize = CGSize(width: Int(dims.width), height: Int(dims.height))
+            }
+            setStatus("Receiving \(dims.width)×\(dims.height)")
         }
     }
 
@@ -1293,6 +1376,9 @@ final class StreamReceiver: ObservableObject {
             stats.rttMs = lastRttMs
             stats.e2eSamples = e2eRing
             stats.transport = transport
+            stats.codec = streamCodec == "hevc" ? "HEVC" : "H.264"
+            let medianInterval = percentile(frameIntervals, 0.5)
+            stats.hitches = frameIntervals.filter { $0 > medianInterval * 1.5 }.count
             stats.macDrops = macDrops
             stats.macEncDrops = macEncDrops
             stats.macNetDrops = macNetDrops
@@ -1333,6 +1419,13 @@ final class StreamReceiver: ObservableObject {
                     "ph50": stats.photonP50.rounded(),
                     "ph95": stats.photonP95.rounded(),
                     "offsetKnown": clockOffsetMs != nil,
+                    // Frame pacing over the last ~120 frames: a "hitch" is a gap
+                    // over 1.5x the median, i.e. at least one frame missing from
+                    // an otherwise steady cadence (what reads as stutter).
+                    "int50": percentile(frameIntervals, 0.5).rounded(),
+                    "int95": percentile(frameIntervals, 0.95).rounded(),
+                    "hitch": stats.hitches,
+                    "codec": stats.codec,
                 ])
                 e2eWindow.removeAll(keepingCapacity: true)
                 encodeWindow.removeAll(keepingCapacity: true)

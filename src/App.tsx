@@ -321,7 +321,7 @@ export default function App() {
           <h2>A true extended display, the way it should be.</h2>
           <div className="fgrid">
             <div className="fcell"><span className="n">001</span><h3>No account, ever</h3><p>No sign-up, no email, no login. And unlike Apple Sidecar — which only works between devices on the <em>same</em> Apple ID — OpenDisplay pairs across different Apple IDs, so you can use a partner's or friend's iPad. Download both apps and go.</p></div>
-            <div className="fcell"><span className="n">002</span><h3>Low-latency pipeline</h3><p>Up to 60 FPS over USB. Hardware H.264 (VideoToolbox real-time mode), TCP_NODELAY, and frame-dropping backpressure with instant keyframe recovery keep it responsive.</p></div>
+            <div className="fcell"><span className="n">002</span><h3>Low-latency pipeline</h3><p>Up to 60 FPS over USB. Hardware H.264 or HEVC (VideoToolbox real-time mode), TCP_NODELAY, and frame-dropping backpressure with instant keyframe recovery keep it responsive.</p></div>
             <div className="fcell"><span className="n">003</span><h3>Two, even three screens</h3><p>You're not limited to one device. Run several iPads and iPhones at once, each as its own extended display — up to three has been tested, and you can freely mix iPads and iPhones. Arrange them all in System Settings like real monitors.</p></div>
             <div className="fcell"><span className="n">004</span><h3>Retina sharp</h3><p>Native Retina resolution — the virtual display matches your device panel pixel-for-pixel at HiDPI (@2x), so text looks exactly like it should.</p></div>
             <div className="fcell"><span className="n">005</span><h3>USB-wired, lowest latency</h3><p>Streams over your charging cable via usbmux. No network, no jitter — and your phone charges while it works.</p></div>
@@ -436,13 +436,19 @@ export default function App() {
               input from the receiving Mac is a follow-up.</p>
             </details>
             <details>
-              <summary>Why is the desktop on my 5K iMac smaller than its resolution?</summary>
-              <p>OpenDisplay gives the extended desktop the receiver's working area at Retina scale, up
-              to what the video stream can carry sharply. The stream tops out at 4096×2304 pixels, so
-              on a 5K iMac the desktop is 2048×1152 points, whether the iMac is set to Default or More
-              Space. Every pixel is sent 1:1 instead of a bigger desktop being shrunk first, which keeps
-              text crisp. Settings toward Larger Text are used as they are and run smoother, especially
-              over WiFi. A full 5K stream is on the roadmap.</p>
+              <summary>Which settings give the best picture?</summary>
+              <p>The defaults are already the sharpest setup: the sender on Best, the receiver at its Default
+              display setting, and the video fullscreen. A cable gives steadier latency than WiFi, but it
+              doesn't need to be fast: the stream uses at most 18 Mb/s, so any USB data cable works for iPhone
+              and iPad. For Mac to Mac, a Thunderbolt, USB4, Ethernet or USB-C data cable all give the same picture.
+              Balanced and Fast send fewer pixels: softer, but smoother, with lower latency.</p>
+              <p>On a Mac receiver, the display setting sets the desktop's size, sent 1:1 up to what the codec
+              allows. With an Apple silicon sender and a receiver that decodes HEVC (Apple silicon, most Intel
+              Macs from 2017 on) that is up to 5120×2880, so a 5K iMac at Default gets its full 2560×1440 desktop.
+              Otherwise H.264 tops out at 4096×2304 (a 2048×1152 desktop). More Space never adds room beyond that.
+              Measured from an M5 Pro to a 5K iMac: Default + Best is the sharpest at about 30 fps; one or two
+              steps toward Larger Text (1600×900) keeps text crisp at about 55 fps; Default + Fast is soft but
+              about 58 fps for video. The README has the full table.</p>
             </details>
             <details>
               <summary>Is any of my screen data sent to a server?</summary>
