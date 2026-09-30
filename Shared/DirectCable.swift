@@ -23,6 +23,18 @@ enum DirectCable {
             && onlyLinkLocal(addresses(of: interface.name))
     }
 
+    /// A local interface is the host-to-host link: wired and holding only
+    /// link-local addresses. Used to spot a Bonjour record seen over the
+    /// cable (NWBrowser.Result.interfaces).
+    static func isDirectLink(_ interface: NWInterface) -> Bool {
+        // anpi* is Apple's internal peripheral link: link-local and wired,
+        // and a Mac receiver's record shows up on it too, but it completes
+        // TCP handshakes without carrying the stream (see the matching
+        // exclusion in StreamReceiver). The real cable is a plain en/bridge.
+        interface.type == .wiredEthernet && !interface.name.hasPrefix("anpi")
+            && onlyLinkLocal(addresses(of: interface.name))
+    }
+
     /// True for a non-empty list of nothing but link-local addresses; one
     /// routable address (DHCP lease, IPv6 prefix) means an ordinary network.
     static func onlyLinkLocal(_ addresses: [String]) -> Bool {

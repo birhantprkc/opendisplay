@@ -241,6 +241,22 @@ final class SenderController: ObservableObject {
     // action to confirm, not auto-grab.
     private var wifiAutoConnectArmed = false
     private let wifiAutoConnectDeadline = Date().addingTimeInterval(12)
+    // Services whose Bonjour record is currently seen over the direct
+    // host-to-host cable. Plugging that cable in is a deliberate act, so a
+    // record newly gaining such an interface connects like a cabled iPhone
+    // does; plain WiFi discovery never grabs a (possibly shared) receiver
+    // after the launch window. Transition-based, so a record that stays on
+    // the cable connects once, not on every browse update.
+    private var onDirectCable: Set<String> = []
+    // Service names the user disconnected while cabled. The record can
+    // vanish and return without a replug (the receiver's display sleeps and
+    // wakes, it restarts), and a cable-only receiver's unplug looks the
+    // same, so the opt-out simply holds until the user connects by hand.
+    // In memory: a relaunched sender starts fresh.
+    private var cableOptOut: Set<String> = []
+    // Every service seen on the cable this run: a Disconnect counts as a
+    // cable opt-out even while the record is briefly gone (receiver asleep).
+    private var everOnCable: Set<String> = []
 
     init() {
         startBrowsing()
@@ -267,6 +283,7 @@ final class SenderController: ObservableObject {
                 self.discovered = Array(results)
                 self.endSessionsWhoseServiceVanished()
                 self.autoConnect()
+                self.connectNewlyCabled()
             }
         }
         browser.start(queue: .main)
@@ -365,6 +382,44 @@ final class SenderController: ObservableObject {
     private func cabled(_ result: NWBrowser.Result) -> Bool {
         usbDevices.contains {
             sameDevice(result, $0) && !usbDisabled.contains("usb:\($0.udid)")
+        }
+    }
+
+    /// A Mac receiver just appeared on the direct cable: connect to it unless
+    /// a session already covers it (a live WiFi session moves onto the cable
+    /// through the sender's own upgrade probe instead).
+    private func connectNewlyCabled() {
+        let nowOnCable = Set(discovered.compactMap { result in
+            result.interfaces.contains(where: DirectCable.isDirectLink) ? serviceName(of: result) : nil
+        })
+        let plugged = nowOnCable.subtracting(onDirectCable)
+        onDirectCable = nowOnCable
+        everOnCable.formUnion(nowOnCable)
+        guard autoConnectEnabled, !plugged.isEmpty else { return }
+        for result in discovered {
+            guard let name = serviceName(of: result), plugged.contains(name),
+                  !cableOptOut.contains(name),
+                  activeSession(coveringWiFi: result) == nil,
+                  !alreadyServedOnCable(result),
+                  // A USB-attached phone belongs to the usbmux path and its
+                  // own opt-out, never this one.
+                  !usbDevices.contains(where: { sameDevice(result, $0) }) else { continue }
+            Log.info("\(name) appeared on the direct cable — connecting")
+            connect(to: .wifi(result))
+        }
+    }
+
+    /// A live session may already talk to this receiver under another
+    /// service name (renamed while streaming). Match the install id when the
+    /// browse result carries TXT; it often does not, so also treat any live
+    /// session already on the cable as covering it: a second cabled Mac
+    /// receiver at the same time is rare, and a click still connects it.
+    private func alreadyServedOnCable(_ result: NWBrowser.Result) -> Bool {
+        let id = txtID(of: result)
+        return sessions.contains { s in
+            guard !s.failed else { return false }
+            if let id, s.deviceID == id { return true }
+            return s.wired && s.deviceKind == "Mac"
         }
     }
 
@@ -524,7 +579,9 @@ final class SenderController: ObservableObject {
         // Connecting a device clears its "don't auto-connect" state.
         switch target {
         case .usb: usbDisabled.remove(id)
-        case .wifi: wifiRemembered.insert(id)
+        case .wifi(let result):
+            wifiRemembered.insert(id)
+            if userInitiated, let name = serviceName(of: result) { cableOptOut.remove(name) }
         }
 
         let transport: SenderTransport
@@ -650,7 +707,11 @@ final class SenderController: ObservableObject {
     func disconnect(_ session: DeviceSession) {
         switch session.target {
         case .usb: usbDisabled.insert(session.id)
-        case .wifi: wifiRemembered.remove(session.id)
+        case .wifi:
+            wifiRemembered.remove(session.id)
+            if let name = session.wifiServiceName, everOnCable.contains(name) {
+                cableOptOut.insert(name)
+            }
         }
         // A migrated session is also reachable the other way — opt that side
         // out too, or auto-connect resurrects the device moments later.
