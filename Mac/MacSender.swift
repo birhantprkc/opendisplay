@@ -420,7 +420,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             try await setupExtend(info)
             // A hello during setup (a rotation inside the identity retry or
             // promotion window) found no stream to reconfigure; apply it now.
-            if let latest = lastHello, streamSelectionInputsChanged(from: info, to: latest) {
+            // Same for a canvas rebuild requested before any stream existed
+            // (a 2x refusal or an HEVC failure during setup).
+            if let latest = lastHello,
+               streamSelectionInputsChanged(from: info, to: latest) || canvasNeedsRebuild {
+                canvasNeedsRebuild = false
                 await reconfigure(latest)
             }
 
@@ -445,7 +449,20 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// rotates (it re-sends hello with swapped dimensions).
     /// The desktop the sender decides for this receiver (`DesktopPolicy`).
     private func desktopPlan(for info: PhoneInfo) -> DesktopPlan {
-        DesktopPolicy.plan(facts: info.facts, choice: displaySize)
+        var plan = DesktopPolicy.plan(facts: info.facts, choice: displaySize)
+        #if DEBUG
+        // `-forceDesktopPoints 374x666` asks for a 2x desktop macOS refuses,
+        // to exercise the 1x fallback (#292).
+        if let forced = UserDefaults.standard.string(forKey: "forceDesktopPoints")?
+            .split(separator: "x").compactMap({ Int($0) }), forced.count == 2 {
+            plan = DesktopPlan(desktop: VirtualCanvasSize(pointsWide: forced[0], pointsHigh: forced[1]),
+                               explicit: true, presentable: plan.presentable)
+        }
+        #endif
+        if isRefused(plan.desktop) {
+            plan = DesktopPolicy.oneXFallback(facts: info.facts)
+        }
+        return plan
     }
 
     /// The virtual display for the receiver: the plan's desktop, a default
@@ -464,6 +481,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             legacyCeiling: legacyEncodeCeiling(for: info),
             videoCaps: info.videoCaps,
             displayMaxFrameRate: info.displayMaxFrameRate)
+        if isRefused(canvas) {
+            return DesktopPolicy.oneXFallback(facts: info.facts).desktop
+        }
         if canvas != plan.desktop {
             Log.info("canvas capped at the stream size: \(canvas.pointsWide)x\(canvas.pointsHigh)pt "
                 + "@\(canvas.scale)x for a \(plan.desktop.pointsWide)x\(plan.desktop.pointsHigh)pt desktop")
@@ -473,6 +493,29 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Per-device desktop size choice; `.default` until the sender offers one.
     private var displaySize: DisplaySize = .default
+
+    /// 2x desktops macOS refused on this session's display (#292); the
+    /// desktop policy runs the 1x fallback instead of any of them.
+    /// Written from the display's enforcement loop, read from capture and
+    /// control paths, so it lives under `pipelineLock`.
+    private var refusedDesktopsStorage: Set<VirtualCanvasSize> = []
+
+    private func isRefused(_ desktop: VirtualCanvasSize) -> Bool {
+        pipelineLock.lock(); defer { pipelineLock.unlock() }
+        return refusedDesktopsStorage.contains(desktop)
+    }
+
+    /// Runs on `queue`, where `lastHello` lives.
+    private func modeRefused(_ refused: VirtualCanvasSize, info: PhoneInfo) {
+        pipelineLock.lock()
+        let inserted = refusedDesktopsStorage.insert(refused).inserted
+        pipelineLock.unlock()
+        guard inserted else { return }
+        let fallback = DesktopPolicy.oneXFallback(facts: info.facts).desktop
+        Log.info("macOS refused \(refused.pointsWide)x\(refused.pointsHigh) @2x, running "
+            + "\(fallback.pointsWide)x\(fallback.pointsHigh) @1x")
+        scheduleCanvasRebuild()
+    }
 
     /// Log once per session that a receiver's `panel` failed validation.
     private var loggedInvalidPanel = false
@@ -667,7 +710,17 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                                           })
                 }
                 if stopped { throw CancellationError() }
-                if created != nil { break }
+                if let created {
+                    await MainActor.run {
+                        created.onModeRefused = { [weak self] refused in
+                            self?.queue.async {
+                                guard let self, let info = self.lastHello else { return }
+                                self.modeRefused(refused, info: info)
+                            }
+                        }
+                    }
+                    break
+                }
                 Log.info("virtual display creation failed (identity +\(totalOffset), attempt \(attempt + 1)) — retrying")
                 await status("Preparing virtual display…")
             }
@@ -838,6 +891,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         Task {
             try? await Task.sleep(for: .milliseconds(300))
             guard let info = self.lastHello, self.canvasNeedsRebuild else { return }
+            // Still in setup: `start()` picks the flag up once setupExtend
+            // returns, so a second capture path never starts beside it.
+            guard self.stream != nil else { return }
             // A running reconfigure picks the flag up at the end of its pass.
             if !self.reconfiguring { self.canvasNeedsRebuild = false }
             await self.reconfigure(info)
